@@ -136,6 +136,45 @@ echo "== 4. child processes"
 mkdir -p "$W/proc"
 "$T" proc "$W/proc" || fails=$((fails+1))
 
+echo "== 5. pitrex.cpp in a stubbed Main, with the real mister_run.sh and a fake um2run"
+# writes /tmp/um2.log, /tmp/pitrexd.log, /tmp/ptx/ as on the MiSTer
+MR=${PD%/*}/../um2run/mister_run.sh
+if [ ! -f "$MR" ]; then fail "no mister_run.sh next to $PD"
+else
+	MAIN=$(cd "$D/../../.." && pwd)
+	echo 0-1 > "$W/cpus"
+	g++ -O2 -Wall -Wextra -Wno-strict-aliasing -Wno-stringop-overflow -Wno-stringop-truncation -Wno-format-truncation -Wno-psabi -Wno-restrict -Werror \
+		-DPITREX_CPUS="\"$W/cpus\"" -I"$MAIN" -o "$W/glue_test" "$D/glue_test.cpp" "$D/../pitrex.cpp" "$D/../pitrex_lib.cpp" || { fail "glue_test build"; exit 1; }
+	G=$W/glue; GU=$G/games/Vectrex-PiTrex/UVMC2
+	mkdir -p "$G/pitrex/um2run" "$G/pitrex/uvmc2" "$GU" "$W/bin"
+	cp "$MR" "$G/pitrex/um2run/mister_run.sh"
+	cat > "$G/pitrex/um2run/um2run" <<'EOF'
+#!/bin/bash
+if [ "$1" = --message ]; then
+	echo "um2run --message $2" >> "$EV"
+	trap 'echo "TERM message" >> "$EV"; exit 0' TERM
+	i=0; while [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; exit 0
+fi
+fc=; sd=; prev=; for a; do case $prev in --frame-cycles) fc=$a ;; --sd) sd=$a ;; esac; prev=$a; img=$a; done
+n=${img##*/}
+echo "um2run IMG=$n FC=$fc SD=${sd##*/} ARGS=$*" >> "$EV"
+trap 'echo "TERM $n" >> "$EV"; exit 0' TERM
+case $n in Short*) sleep 1; exit 0 ;; esac
+while :; do sleep 0.05; done
+EOF
+	chmod +x "$G/pitrex/um2run/um2run"
+	# real-time priority needs root: the fake chrt runs the program as it is
+	printf '#!/bin/sh\nshift 2\nexec "$@"\n' > "$W/bin/chrt"; chmod +x "$W/bin/chrt"
+	touch "$GU/Plain.um2" "$GU/Fast.um2" "$GU/Short.um2" "$GU/Card1.um2" "$GU/Vector Pinball.um2" "$GU/Land.um2" "$GU/cart.bin"
+	echo frame_cycles=25000 > "$GU/Fast.um2.cfg"
+	printf 'orient=cw\nview=open\n' > "$GU/Land.um2.cfg"
+	printf '#!/bin/bash\necho "ptx $(basename $0)" >> "$EV"\ntrap '"'"'echo "TERM ptx" >> "$EV"; exit 0'"'"' TERM\nwhile :; do sleep 0.05; done\n' > "$GU/My Prog.ptx"
+	PATH=$W/bin:$PATH "$W/glue_test" "$G" "$W/events.log" | grep -E "^(PASS|FAIL|==|        )" | tee "$W/glue.out"
+	grep -q "^FAIL" "$W/glue.out" && fails=$((fails+1))
+	grep -q "^PASS no program left running" "$W/glue.out" || fail "glue_test did not finish"
+	rm -f /tmp/ptx/My_Prog
+fi
+
 echo
 if [ $fails -eq 0 ]; then echo "all passed"; else echo "$fails FAILED"; fi
 exit $(( fails > 0 ))

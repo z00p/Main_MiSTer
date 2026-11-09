@@ -19,12 +19,16 @@
 
 extern char **environ;
 
+#ifndef PITREX_CPUS
+#define PITREX_CPUS "/sys/devices/system/cpu/online"
+#endif
+
 void pitrex_dirs_init(pitrex_dirs *d, const char *root)
 {
 	snprintf(d->pitrex, sizeof(d->pitrex), "%s/pitrex", root);
 	snprintf(d->um2, sizeof(d->um2), "%s/um2run", d->pitrex);
 	snprintf(d->sd_dir, sizeof(d->sd_dir), "%s/uvmc2", d->pitrex);
-	d->cpus = "/sys/devices/system/cpu/online";
+	d->cpus = PITREX_CPUS;
 }
 
 int pitrex_is_file(const char *path)

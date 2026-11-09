@@ -100,3 +100,6 @@
 
 // VideoBrain support
 #include "support/videobrain/videobrain.h"
+
+// Vectrex-PiTrex support
+#include "support/pitrex/pitrex.h"

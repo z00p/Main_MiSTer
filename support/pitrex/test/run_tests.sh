@@ -144,7 +144,7 @@ else
 	MAIN=$(cd "$D/../../.." && pwd)
 	echo 0-1 > "$W/cpus"
 	g++ -O2 -Wall -Wextra -Wno-strict-aliasing -Wno-stringop-overflow -Wno-stringop-truncation -Wno-format-truncation -Wno-psabi -Wno-restrict -Werror \
-		-DPITREX_CPUS="\"$W/cpus\"" -I"$MAIN" -o "$W/glue_test" "$D/glue_test.cpp" "$D/../pitrex.cpp" "$D/../pitrex_lib.cpp" || { fail "glue_test build"; exit 1; }
+		-DPITREX_CPUS="\"$W/cpus\"" -DPITREX_MAIN_FILE="\"$W/pitrex_main\"" -I"$MAIN" -o "$W/glue_test" "$D/glue_test.cpp" "$D/../pitrex.cpp" "$D/../pitrex_lib.cpp" || { fail "glue_test build"; exit 1; }
 	G=$W/glue; GU=$G/games/Vectrex-PiTrex/UVMC2
 	mkdir -p "$G/pitrex/um2run" "$G/pitrex/uvmc2" "$GU" "$W/bin"
 	cp "$MR" "$G/pitrex/um2run/mister_run.sh"
@@ -173,6 +173,22 @@ EOF
 	grep -q "^FAIL" "$W/glue.out" && fails=$((fails+1))
 	grep -q "^PASS no program left running" "$W/glue.out" || fail "glue_test did not finish"
 	rm -f /tmp/ptx/My_Prog
+fi
+
+echo "== 6. pitrexd stands aside while main-pitrex runs (/tmp/pitrex_main: pid and program path)"
+eval "$(sed -n '/^main_pitrex() {/,/^}/p' "$PD")"
+T=$W/aside; mkdir -p "$T"
+if ! type main_pitrex > /dev/null 2>&1; then fail "no main_pitrex() in $PD"
+else
+	sleep 30 & sp=$!
+	main_pitrex && fail "no file: on duty" || pass "no file: on duty"
+	echo "$sp $(readlink /proc/$sp/exe)" > "$T/pitrex_main"
+	main_pitrex && pass "file names a live main-pitrex: stands aside" || fail "file names a live main-pitrex: stands aside"
+	echo "$sp /media/fat/main-pitrex.test" > "$T/pitrex_main"
+	main_pitrex && fail "same pid, another program (Main exec'd the stock Main): on duty" || pass "same pid, another program (Main exec'd the stock Main): on duty"
+	kill $sp; wait $sp 2>/dev/null
+	echo "$sp $(command -v sleep)" > "$T/pitrex_main"
+	main_pitrex && fail "pid gone: on duty" || pass "pid gone: on duty"
 fi
 
 echo

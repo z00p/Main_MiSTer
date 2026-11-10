@@ -27,6 +27,9 @@
 #define PITREX_LOG       "/tmp/pitrexd.log"
 #define PITREX_IRQ_SAVED "/tmp/ft_irq_saved"
 #define PITREX_PTX_DIR   "/tmp/ptx"
+#ifndef PITREX_MAIN_FILE
+#define PITREX_MAIN_FILE "/tmp/pitrex_main"
+#endif
 
 // core options set from a sidecar
 #define PITREX_ST_ORIENT "[76:75]" // Orientation: 0 normal, 1 90 degrees CCW, 2 CW
@@ -54,9 +57,10 @@ static char notice[256];
 
 int is_pitrex()
 {
-	// the core's own name is Vectrex-PiTrex; with a setname it can also run as VECTREX
+	// This Main is loaded with main= in the core's own ini section, so it only ever runs for our core.
+	// The name check is a safety net: the core's own name is Vectrex-PiTrex; with a setname it can also run as VECTREX.
 	const char *orig = user_io_get_core_name(1);
-	return cfg.pitrex && (!strcasecmp(orig, "Vectrex-PiTrex") || !strcasecmp(orig, "VECTREX"));
+	return !strcasecmp(orig, "Vectrex-PiTrex") || !strcasecmp(orig, "VECTREX");
 }
 
 int pitrex_active()
@@ -92,12 +96,18 @@ static void init()
 
 	pitrex_dirs_init(&dirs, getRootDir());
 
-	// pitrexd acts on Main's /tmp/FILESELECT reports: without them it leaves the picks to us
-	if (cfg.log_file_entry)
+	// pitrexd (the helper for the stock Main) stands aside while this file names a live main-pitrex:
+	// "<pid> <program path>"; the path too, because Main execs the next Main in the same process
+	char exe[1024];
+	ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	FILE *f = n > 0 ? fopen(PITREX_MAIN_FILE, "w") : NULL;
+	if (f)
 	{
-		cfg.log_file_entry = 0;
-		pitrex_log("picks are started by Main (log_file_entry off for this core)");
+		exe[n] = 0;
+		fprintf(f, "%d %s\n", (int)getpid(), exe);
+		fclose(f);
 	}
+	pitrex_log("main-pitrex: picks are started by Main");
 }
 
 static int running()
@@ -208,7 +218,11 @@ static void launch_um2()
 	char settle[64], cpu1[64];
 	snprintf(settle, sizeof(settle), "SETTLE=%s", plan.settle[0] ? plan.settle : "1");
 	snprintf(cpu1, sizeof(cpu1), "CPU1_AFTER=%s", plan.cpu1_after[0] ? plan.cpu1_after : "0");
-	const char *env[] = { settle, cpu1, NULL };
+
+	// Scheduling: this Main sleeps while a game runs, so core 1 can leave real-time scheduling once on
+	// CPU1 (rt0) instead of handing Main a fixed share of it; core 0 (the cart's sound) stays real-time.
+	// No static in play, controls very responsive (Pac-Man, John, 10 Nov 2026).
+	const char *env[] = { settle, cpu1, "UM2_SCHED=rt nonice irq1 rt0", NULL };
 
 	// mister_run.sh starts um2run in the background with its own priority and CPUs, then returns
 	pitrex_spawn_opt o = { dirs.um2, PITREX_LOG, 1, 0, 0, env };
@@ -301,37 +315,34 @@ static void start_ptx(const char *f)
 	pitrex_log("started %s from %s", name, f);
 }
 
-void pitrex_file_selected(const char *path)
+int pitrex_file_selected(const char *path)
 {
 	char img[1024];
 	snprintf(img, sizeof(img), "%s", getFullPath(path));
 	int kind = pitrex_file_kind(img);
-	if (!kind) return;
+	if (!kind) return 0;
 
 	init();
 	if (!pitrex_is_file(img))
 	{
 		pitrex_log("REFUSED %s: no such file", img);
 		refuse(PITREX_MSG_NO_FILE);
-		return;
+		return 1;
 	}
 
 	// Main can report one MGL file load twice: leave a program just started from the same file alone
-	if (!strcmp(img, last_img) && !CheckTimer(last_timer) && (state != ST_IDLE || running())) return;
+	if (!strcmp(img, last_img) && !CheckTimer(last_timer) && (state != ST_IDLE || running())) return 1;
 	snprintf(last_img, sizeof(last_img), "%s", img);
 	last_timer = GetTimer(10000);
 
 	if (kind == PITREX_KIND_UM2) start_um2(img);
 	else start_ptx(img);
+	return 1;
 }
 
 void pitrex_poll()
 {
 	init();
-
-	// Main reads the ini again when the video mode changes (video_mode_adjust, earlier in user_io_poll),
-	// which turns log_file_entry back on; pitrexd would then start an MGL's game as well (10 Nov 2026)
-	cfg.log_file_entry = 0;
 
 	if (notice[0] && !user_io_osd_is_visible())
 	{

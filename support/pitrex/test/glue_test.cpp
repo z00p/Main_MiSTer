@@ -20,6 +20,10 @@
 #include "../../../menu.h"
 #include "../pitrex.h"
 
+#ifndef PITREX_MAIN_FILE
+#define PITREX_MAIN_FILE "/tmp/pitrex_main"
+#endif
+
 // ---- stubs for Main ----
 cfg_t cfg;
 static char core_name[32] = "Vectrex-PiTrex";
@@ -112,10 +116,12 @@ static int alive(const char *what)
 	return !system(cmd);
 }
 
+static int to_core;   // files Main sent to the core (user_io_file_tx)
+
 static void pick(const char *rel)
 {
-	// what menu.cpp does: the file goes to the core, then the hook
-	if (is_pitrex()) pitrex_file_selected(rel);
+	// what menu.cpp does: ours (.um2/.ptx) are started by the hook and not sent to the core
+	if (!(is_pitrex() && pitrex_file_selected(rel))) to_core++;
 }
 
 int main(int argc, char **argv)
@@ -129,37 +135,43 @@ int main(int argc, char **argv)
 	char path[2048];
 	const char *U = "games/Vectrex-PiTrex/UVMC2";
 
-	printf("== off unless asked for\n");
-	cfg.pitrex = 0;
-	check(!is_pitrex(), "PITREX=0: not active");
-	cfg.pitrex = 1;
+	printf("== only for our core (no ini switch: this Main is loaded with main= for our core)\n");
 	strcpy(orig_name, "GBA");
-	check(!is_pitrex(), "PITREX=1 with another core: not active");
+	check(!is_pitrex(), "another core: not active");
 	strcpy(orig_name, "Vectrex-PiTrex");
-	check(is_pitrex(), "PITREX=1 with the core under its own name (Vectrex-PiTrex, as on the MiSTer): active");
+	check(is_pitrex(), "the core under its own name (Vectrex-PiTrex, as on the MiSTer): active");
 	strcpy(orig_name, "VECTREX");
-	check(is_pitrex(), "PITREX=1 with the core (VECTREX, setname Vectrex-PiTrex): active");
+	check(is_pitrex(), "the core as VECTREX (setname Vectrex-PiTrex): active");
 	check(!pitrex_active(), "nothing running: Main's poll timeout stays 0");
 	cfg.log_file_entry = 1;
 	run_for(20);
-	check(cfg.log_file_entry == 0, "log_file_entry turned off for this core (pitrexd stands down)");
+	check(cfg.log_file_entry == 1, "log_file_entry left as the ini has it");
+	{
+		char want[1200], got[1200] = "", exe[1024] = "";
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+		if (n > 0) exe[n] = 0;
+		snprintf(want, sizeof(want), "%d %s\n", (int)getpid(), exe);
+		FILE *mf = fopen(PITREX_MAIN_FILE, "r");
+		if (mf) { if (!fgets(got, sizeof(got), mf)) got[0] = 0; fclose(mf); }
+		check(!strcmp(got, want), "pitrex_main names this Main (pid and program) for pitrexd to stand aside");
+	}
 
 	printf("== a pick starts the game through mister_run.sh\n");
 	snprintf(path, sizeof(path), "%s/cart.bin", U);
 	pick(path);
 	run_for(200);
 	check(!pitrex_active() && count("um2run") == 0, "a Vectrex cart pick does nothing");
+	check(to_core == 1, "... and the cart goes to the core");
 	snprintf(path, sizeof(path), "%s/Plain.um2", U);
 	pick(path);
+	check(to_core == 1, "a .um2 is not sent to the core");
 	check(pitrex_active(), "Plain.um2: active at once (no card, no check)");
 	run_for(1500);
 	check(count("IMG=Plain.um2 FC=30000 SD= ARGS=--bus --hold") == 1 && count("--secs 1000000000") == 1, "um2run --bus --hold ... --frame-cycles 30000 --secs 1000000000 Plain.um2, no card");
-	check(count("--cpu 0 --cpu1 1 --donate 6000") == 1 && count("--no-nice") == 1, "with mister_run.sh's default words (share, nonice)");
+	check(count("--cpu 0 --cpu1 1 --donate 3000") == 1 && count("--donate 6000") == 0 && count("--no-nice") == 1 && count("--cpu1-normal") == 1,
+		"scheduling words rt nonice irq1 rt0: no fixed share, core 1 normal once on CPU1");
 	check(count("--settle 1 --cpu1-after 0") == 1, "no black-screen guard by default (settle 1, core 1 on its CPU at once)");
 	check(alive("bus"), "um2run is running");
-	cfg.log_file_entry = 1;
-	run_for(20);
-	check(cfg.log_file_entry == 0, "log_file_entry turned on again by an ini re-read: off again at the next poll");
 
 	printf("== the same report again within 10 s is not a new pick\n");
 	pick(path);

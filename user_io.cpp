@@ -4103,6 +4103,7 @@ void user_io_poll()
 	if (is_marty()) marty_poll();
 	if (is_videobrain()) videobrain_poll();
 	if (is_pcfx()) pcfx_poll();
+	if (is_pitrex()) pitrex_poll();
 	if (is_cdi()) cdi_poll();
 	if (is_psx()) psx_poll();
 	if (is_neogeo_cd()) neocd_poll();

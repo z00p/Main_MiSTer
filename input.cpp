@@ -5545,6 +5545,7 @@ int input_test(int getchar)
 	{
 		int timeout = 0;
 		if (is_menu() && video_fb_state()) timeout = 25;
+		else if (pitrex_active()) timeout = PITREX_POLL_MS;
 
 		while (1)
 		{

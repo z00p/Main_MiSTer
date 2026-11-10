@@ -97,7 +97,8 @@ static void init()
 	pitrex_dirs_init(&dirs, getRootDir());
 
 	// pitrexd (the helper for the stock Main) stands aside while this file names a live main-pitrex:
-	// "<pid> <program path>"; the path too, because Main execs the next Main in the same process
+	// "<pid> <program path>"; the path too: every core load restarts Main as a new process, so the pid
+	// can later belong to another program (the stock Main, after a change to another core)
 	char exe[1024];
 	ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
 	FILE *f = n > 0 ? fopen(PITREX_MAIN_FILE, "w") : NULL;

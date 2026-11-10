@@ -11,7 +11,7 @@
 
 int  is_pitrex();
 int  pitrex_active();
-int  pitrex_file_selected(const char *path); // 1: ours (.um2/.ptx), not sent to the core
+int  pitrex_file_selected(const char *path); // 1: ours (.um2/.ptx); the file still goes to the core first
 void pitrex_poll();
 void pitrex_stop();
 

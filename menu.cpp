@@ -2974,7 +2974,8 @@ void HandleUI(void)
 					}
 					else
 					{
-						if (!(is_pitrex() && pitrex_file_selected(selPath))) user_io_file_tx(selPath, idx, opensave, 0, 0, load_addr);
+						user_io_file_tx(selPath, idx, opensave, 0, 0, load_addr);
+						if (is_pitrex()) pitrex_file_selected(selPath);
 						if (!store_name)
 						{
 							game_docs_init(selPath, user_io_get_file_crc());

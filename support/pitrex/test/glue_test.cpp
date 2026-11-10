@@ -120,10 +120,8 @@ static int to_core;   // files Main sent to the core (user_io_file_tx)
 
 static void pick(const char *rel)
 {
-	// what menu.cpp does: the file goes to the core, then the hook. A Bluetooth pad worked in the game
-	// only with the file sent (MiSTer, 10 Nov 2026), so ours are sent too
-	to_core++;
-	if (is_pitrex()) pitrex_file_selected(rel);
+	// what menu.cpp does: ours (.um2/.ptx) are started by the hook and not sent to the core
+	if (!(is_pitrex() && pitrex_file_selected(rel))) to_core++;
 }
 
 int main(int argc, char **argv)
@@ -166,7 +164,7 @@ int main(int argc, char **argv)
 	check(to_core == 1, "... and the cart goes to the core");
 	snprintf(path, sizeof(path), "%s/Plain.um2", U);
 	pick(path);
-	check(to_core == 2, "a .um2 is sent to the core as well");
+	check(to_core == 1, "a .um2 is not sent to the core");
 	check(pitrex_active(), "Plain.um2: active at once (no card, no check)");
 	run_for(1500);
 	check(count("IMG=Plain.um2 FC=30000 SD= ARGS=--bus --hold") == 1 && count("--secs 1000000000") == 1, "um2run --bus --hold ... --frame-cycles 30000 --secs 1000000000 Plain.um2, no card");

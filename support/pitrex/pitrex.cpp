@@ -219,10 +219,10 @@ static void launch_um2()
 	snprintf(settle, sizeof(settle), "SETTLE=%s", plan.settle[0] ? plan.settle : "1");
 	snprintf(cpu1, sizeof(cpu1), "CPU1_AFTER=%s", plan.cpu1_after[0] ? plan.cpu1_after : "0");
 
-	// Scheduling: this Main sleeps while a game runs, so core 1 can leave real-time scheduling once on
-	// CPU1 (rt0) instead of handing Main a fixed share of it; core 0 (the cart's sound) stays real-time.
-	// No static in play, controls very responsive (Pac-Man, John, 10 Nov 2026).
-	const char *env[] = { settle, cpu1, "UM2_SCHED=rt nonice irq1 rt0", NULL };
+	// Scheduling: mister_run.sh's own words (rt nonice irq1 share). Tried 10 Nov 2026: rt0 (core 1 at
+	// normal priority on CPU1, no fixed share) was clean with a wired pad, but a Bluetooth pad worked
+	// only in the OSD, not in the game, at nice -20 and at nice 0; at nice 0 the static came back too.
+	const char *env[] = { settle, cpu1, NULL };
 
 	// mister_run.sh starts um2run in the background with its own priority and CPUs, then returns
 	pitrex_spawn_opt o = { dirs.um2, PITREX_LOG, 1, 0, 0, env };

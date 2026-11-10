@@ -168,8 +168,8 @@ int main(int argc, char **argv)
 	check(pitrex_active(), "Plain.um2: active at once (no card, no check)");
 	run_for(1500);
 	check(count("IMG=Plain.um2 FC=30000 SD= ARGS=--bus --hold") == 1 && count("--secs 1000000000") == 1, "um2run --bus --hold ... --frame-cycles 30000 --secs 1000000000 Plain.um2, no card");
-	check(count("--cpu 0 --cpu1 1 --donate 3000") == 1 && count("--donate 6000") == 0 && count("--no-nice") == 1 && count("--cpu1-normal") == 1,
-		"scheduling words rt nonice irq1 rt0: no fixed share, core 1 normal once on CPU1");
+	check(count("--cpu 0 --cpu1 1 --donate 6000") == 1 && count("--no-nice") == 1 && count("--cpu1-normal") == 0,
+		"mister_run.sh's default words (rt nonice irq1 share): Bluetooth needs the share");
 	check(count("--settle 1 --cpu1-after 0") == 1, "no black-screen guard by default (settle 1, core 1 on its CPU at once)");
 	check(alive("bus"), "um2run is running");
 

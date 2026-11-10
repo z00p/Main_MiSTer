@@ -54,7 +54,9 @@ static char notice[256];
 
 int is_pitrex()
 {
-	return cfg.pitrex && !strcasecmp(user_io_get_core_name(1), "VECTREX");
+	// the core's own name is Vectrex-PiTrex; with a setname it can also run as VECTREX
+	const char *orig = user_io_get_core_name(1);
+	return cfg.pitrex && (!strcasecmp(orig, "Vectrex-PiTrex") || !strcasecmp(orig, "VECTREX"));
 }
 
 int pitrex_active()
@@ -199,9 +201,13 @@ static void launch_um2()
 	const char *argv[64];
 	pitrex_um2_argv(&plan, buf, sizeof(buf), argv, 64);
 
+	// No black-screen guard by default: Main starts the game after the core load and its video mode
+	// change, and idles while the game runs, so core 1 gets its own CPU at once (a sidecar can still
+	// set settle=/cpu1_after=). With the guard, games ran slow and their sound was rough for the first
+	// 10 s; without it, Pac-Man and Punch-Out started clean (John, 10 Nov 2026).
 	char settle[64], cpu1[64];
-	snprintf(settle, sizeof(settle), "SETTLE=%s", plan.settle);
-	snprintf(cpu1, sizeof(cpu1), "CPU1_AFTER=%s", plan.cpu1_after);
+	snprintf(settle, sizeof(settle), "SETTLE=%s", plan.settle[0] ? plan.settle : "1");
+	snprintf(cpu1, sizeof(cpu1), "CPU1_AFTER=%s", plan.cpu1_after[0] ? plan.cpu1_after : "0");
 	const char *env[] = { settle, cpu1, NULL };
 
 	// mister_run.sh starts um2run in the background with its own priority and CPUs, then returns
@@ -322,6 +328,10 @@ void pitrex_file_selected(const char *path)
 void pitrex_poll()
 {
 	init();
+
+	// Main reads the ini again when the video mode changes (video_mode_adjust, earlier in user_io_poll),
+	// which turns log_file_entry back on; pitrexd would then start an MGL's game as well (10 Nov 2026)
+	cfg.log_file_entry = 0;
 
 	if (notice[0] && !user_io_osd_is_visible())
 	{

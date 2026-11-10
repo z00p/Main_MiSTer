@@ -135,6 +135,8 @@ int main(int argc, char **argv)
 	cfg.pitrex = 1;
 	strcpy(orig_name, "GBA");
 	check(!is_pitrex(), "PITREX=1 with another core: not active");
+	strcpy(orig_name, "Vectrex-PiTrex");
+	check(is_pitrex(), "PITREX=1 with the core under its own name (Vectrex-PiTrex, as on the MiSTer): active");
 	strcpy(orig_name, "VECTREX");
 	check(is_pitrex(), "PITREX=1 with the core (VECTREX, setname Vectrex-PiTrex): active");
 	check(!pitrex_active(), "nothing running: Main's poll timeout stays 0");
@@ -153,7 +155,11 @@ int main(int argc, char **argv)
 	run_for(1500);
 	check(count("IMG=Plain.um2 FC=30000 SD= ARGS=--bus --hold") == 1 && count("--secs 1000000000") == 1, "um2run --bus --hold ... --frame-cycles 30000 --secs 1000000000 Plain.um2, no card");
 	check(count("--cpu 0 --cpu1 1 --donate 6000") == 1 && count("--no-nice") == 1, "with mister_run.sh's default words (share, nonice)");
+	check(count("--settle 1 --cpu1-after 0") == 1, "no black-screen guard by default (settle 1, core 1 on its CPU at once)");
 	check(alive("bus"), "um2run is running");
+	cfg.log_file_entry = 1;
+	run_for(20);
+	check(cfg.log_file_entry == 0, "log_file_entry turned on again by an ini re-read: off again at the next poll");
 
 	printf("== the same report again within 10 s is not a new pick\n");
 	pick(path);

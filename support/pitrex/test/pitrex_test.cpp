@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -120,24 +121,38 @@ static void write_file(const char *path, const char *text, int mode)
 	chmod(path, mode);
 }
 
+// run_tests.sh copies this executable as um2run: its main thread name differs from its executable
+static int do_um2run(const char *log)
+{
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, SIGTERM);
+	if (sigprocmask(SIG_BLOCK, &set, NULL) || prctl(PR_SET_NAME, "u2core0", 0, 0, 0)) return 1;
+	FILE *f = fopen(log, "a");
+	if (!f) return 1;
+	fputs("renamed u2core0\n", f);
+	fflush(f);
+	int sig;
+	if (sigwait(&set, &sig)) { fclose(f); return 1; }
+	fputs("um2run-term\n", f);
+	fclose(f);
+	return 143;
+}
+
 static int do_proc(const char *dir)
 {
-	char um2run[512], runner[512], stubborn[512], log[512], out[512], saved[512];
-	snprintf(um2run, sizeof(um2run), "%s/um2run", dir);
+	char runner[512], stubborn[512], log[512], out[512], saved[512];
 	snprintf(runner, sizeof(runner), "%s/mister_run.sh", dir);
 	snprintf(stubborn, sizeof(stubborn), "%s/stubborn", dir);
 	snprintf(log, sizeof(log), "%s/events.log", dir);
 	snprintf(out, sizeof(out), "%s/out.log", dir);
 	snprintf(saved, sizeof(saved), "%s/ft_irq_saved", dir);
 
-	// a fake um2run: runs until SIGTERM, then exits 143 like the real one under mister_run.sh
 	char text[2048];
-	snprintf(text, sizeof(text), "#!/bin/bash\ntrap 'echo um2run-term >> %s; exit 143' TERM\nwhile :; do sleep 0.05; done\n", log);
-	write_file(um2run, text, 0755);
 	// a fake mister_run.sh: um2run in a background subshell that puts things back after it, as the real one does
 	snprintf(text, sizeof(text),
 		"#!/bin/sh\necho \"args $* settle=$SETTLE c1=$CPU1_AFTER pwd=$(pwd)\"\n"
-		"( ./um2run; echo \"restored rc=$?\" >> %s ) > /dev/null 2>&1 &\necho started\n", log);
+		"( trap 'echo runner-term >> %s; exit 1' TERM; ./um2run worker %s; echo \"restored rc=$?\" >> %s ) > /dev/null 2>&1 &\necho started\n", log, log, log);
 	write_file(runner, text, 0755);
 	snprintf(text, sizeof(text), "#!/bin/bash\ntrap '' TERM\nwhile :; do sleep 0.05; done\n");
 	write_file(stubborn, text, 0755);
@@ -158,6 +173,7 @@ static int do_proc(const char *dir)
 	check(file_has(out, pwd), "the child runs in the given directory");
 	check(pitrex_group_alive(g), "the group lives on after mister_run.sh returns (um2run in the background)");
 	check(getpgid(g) == g || getpgid(g) < 0, "the child leads its own process group");
+	check(file_has(log, "renamed u2core0"), "um2run renamed its main thread before stop");
 
 	// 2. stop: um2run gets SIGTERM, the subshell still runs its clean-up, all gone well within 2 s
 	double t0 = now();
@@ -168,6 +184,7 @@ static int do_proc(const char *dir)
 	usleep(100000);
 	check(file_has(log, "um2run-term"), "um2run got SIGTERM");
 	check(file_has(log, "restored rc=143"), "mister_run.sh's subshell ran its clean-up after um2run (USB interrupt put back)");
+	check(!file_has(log, "runner-term"), "renamed um2run gets SIGTERM before the rest of its group");
 	check(!pitrex_group_alive(g), "nothing of the group is left");
 
 	// 3. a program that ignores SIGTERM is killed after the timeout
@@ -219,6 +236,7 @@ static int do_unit()
 
 int main(int argc, char **argv)
 {
+	if (argc == 3 && !strcmp(argv[1], "worker")) return do_um2run(argv[2]);
 	if (argc == 6 && !strcmp(argv[1], "plan")) return do_plan(argv[2], argv[3], argv[4], argv[5]);
 	if (argc == 4 && !strcmp(argv[1], "get"))
 	{

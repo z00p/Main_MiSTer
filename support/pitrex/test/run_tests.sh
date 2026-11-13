@@ -134,6 +134,7 @@ fresh; chmod -x "$R/pitrex/um2run/um2run"; rm "$R/pitrex/um2run/mister_run.sh"; 
 
 echo "== 4. child processes"
 mkdir -p "$W/proc"
+cp "$T" "$W/proc/um2run"
 "$T" proc "$W/proc" || fails=$((fails+1))
 
 echo "== 5. pitrex.cpp in a stubbed Main, with the real mister_run.sh and a fake um2run"

@@ -465,7 +465,7 @@ int pitrex_group_alive(pid_t pgid)
 	return !kill(-pgid, 0) || errno == EPERM;
 }
 
-// SIGTERM the processes of group pgid named 'name' (from /proc/<pid>/stat). Returns how many.
+// SIGTERM the processes of group pgid with executable basename 'name'. Returns how many.
 static int term_named(pid_t pgid, const char *name)
 {
 	DIR *dir = opendir("/proc");
@@ -494,7 +494,14 @@ static int term_named(pid_t pgid, const char *name)
 		char st;
 		int ppid, pgrp;
 		if (sscanf(r + 1, " %c %d %d", &st, &ppid, &pgrp) != 3) continue;
-		if (pgrp != pgid || strcmp(l + 1, name)) continue;
+		if (pgrp != pgid) continue;
+
+		char exe[4096];
+		snprintf(path, sizeof(path), "/proc/%s/exe", de->d_name);
+		n = readlink(path, exe, sizeof(exe) - 1);
+		if (n <= 0 || n >= (ssize_t)sizeof(exe) - 1) continue;
+		exe[n] = 0;
+		if (strcmp(base_name(exe), name)) continue;
 		if (!kill(atoi(de->d_name), SIGTERM)) cnt++;
 	}
 	closedir(dir);

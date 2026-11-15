@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
+#include <limits.h>
 #include <linux/loop.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -35,7 +36,6 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
-#include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -891,11 +891,15 @@ int loop_attach(const str &img, bool ro)
 	die("no free loop device");
 }
 
+// The device's path, as opened. Not from its minor number: with loop partitions on (the MiSTer's kernel has max_part=15)
+// loop N is minor N*16, so /dev/loop1 would come out as /dev/loop16.
 str loop_name(int lfd)
 {
-	struct stat st;
-	char dev[32] = "/dev/loop?";
-	if (!fstat(lfd, &st)) snprintf(dev, sizeof(dev), "/dev/loop%u", minor(st.st_rdev));
+	char fd[32], dev[PATH_MAX];
+	snprintf(fd, sizeof(fd), "/proc/self/fd/%d", lfd);
+	ssize_t n = readlink(fd, dev, sizeof(dev) - 1);
+	if (n <= 0) return "/dev/loop?";
+	dev[n] = 0;
 	return dev;
 }
 

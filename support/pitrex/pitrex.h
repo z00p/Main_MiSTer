@@ -15,6 +15,12 @@ int  pitrex_file_selected(const char *path); // 1: ours (.um2/.ptx), not sent to
 void pitrex_poll();
 void pitrex_stop();
 
+// The core's OSD menu: Main's own lines, to build the UVMC2 card (pitrex.cpp). pitrex_confstr adds them to the core's conf
+// string (our core only); pitrex_osd_option runs one when it is picked and returns 1 (0: not one of ours).
+#include <stddef.h>
+void pitrex_confstr(char *cfg, size_t size);
+int  pitrex_osd_option(const char *opt);
+
 // main-pitrex --um2run ...: run um2run instead of Main (pitrex_worker.cpp)
 int  pitrex_worker_main(int argc, char *argv[]);
 

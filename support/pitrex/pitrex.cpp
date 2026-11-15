@@ -6,6 +6,8 @@
 // /tmp/ptx and run. The program runs in its own process group and is stopped on the next pick and
 // before any core load. Problems are shown on the Vectrex (um2run --message) and in
 // the OSD. The rules are pitrexd.sh's, which did this from outside Main.
+// The core's OSD also gets two lines of Main's own, to build the UVMC2 card (main-pitrex
+// --make-card, pitrex_card.cpp) as a child process, with its progress in the OSD.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +18,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <string>
+#include <vector>
 
 #include "../../cfg.h"
 #include "../../file_io.h"
@@ -29,6 +33,12 @@
 #define PITREX_IRQ_SAVED "/tmp/ft_irq_saved"
 #define PITREX_PTX_DIR   "/tmp/ptx"
 #define PITREX_UM2_LOG   "/tmp/um2.log"
+#define PITREX_CARD_LOG  "/tmp/make_card.log"
+#define PITREX_MSG_BUILDING "CARD BEING BUILT|PLEASE WAIT"
+
+// Main's own lines in the core's OSD menu (added to its conf string, never sent to the core)
+static const char *OSD_BUILD   = "R[61],Build UVMC2 card";
+static const char *OSD_REBUILD = "R[62],Rebuild card if changed";
 #ifndef PITREX_MAIN_FILE
 #define PITREX_MAIN_FILE "/tmp/pitrex_main"
 #endif
@@ -55,6 +65,11 @@ static int group_status;   // its wait status, once reaped
 static int group_reaped;
 static char self_exe[1024]; // this Main: um2run is its worker mode
 static pid_t check_pid;
+static pid_t card_pid;          // the card builder started from the OSD
+static int card_full;           // Build (1) or Rebuild if changed (0)
+static unsigned long card_timer, card_refresh;
+static std::string card_shown;  // the progress last put in the OSD
+static std::string card_result; // the summary, shown once the OSD is closed
 static unsigned long timer;
 static unsigned long alive_timer;
 static char last_img[1024];
@@ -296,7 +311,7 @@ static void check_card()
 
 static void start_um2(const char *img)
 {
-	const char *msg = pitrex_um2_refusal(&dirs, img);
+	const char *msg = card_pid ? PITREX_MSG_BUILDING : pitrex_um2_refusal(&dirs, img);
 	if (msg)
 	{
 		refuse(msg);
@@ -404,6 +419,152 @@ int pitrex_file_selected(const char *path)
 	return 1;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Building the UVMC2 card from the OSD
+
+void pitrex_confstr(char *cfg, size_t size)
+{
+	// only our core: its name is the conf string's first field
+	const char *name_end = strchr(cfg, ';');
+	size_t n = name_end ? (size_t)(name_end - cfg) : strlen(cfg);
+	if (n != strlen("Vectrex-PiTrex") || strncasecmp(cfg, "Vectrex-PiTrex", n)) return;
+
+	// no empty field: the menu stops at one
+	size_t len = strlen(cfg);
+	snprintf(cfg + len, size - len, "%s-;%s;%s", (len && cfg[len - 1] != ';') ? ";" : "", OSD_BUILD, OSD_REBUILD);
+}
+
+// a line of the builder's for the OSD's info box (30 characters a line): without "make_card: " and the storage
+// folder, wrapped at spaces, the following lines indented
+static void card_wrap(std::string &out, std::string line, const char *indent)
+{
+	const size_t w = 30;
+	if (!line.compare(0, 11, "make_card: ")) line.erase(0, 11);
+	std::string root = std::string(getRootDir()) + "/";
+	for (size_t i; (i = line.find(root)) != std::string::npos;) line.erase(i, root.size());
+	if (line.find("a UVMC2 game is running and may be writing to its card") != std::string::npos)
+		line = "ERROR: a game is using the card. Reset the core (OSD Reset), then try again.";
+	bool first = true;
+	while (!line.empty())
+	{
+		std::string lead = first ? "" : indent;
+		size_t room = w - lead.size(), cut = line.size();
+		if (cut > room)
+		{
+			cut = line.rfind(' ', room);
+			if (cut == std::string::npos || cut == 0) cut = room;
+		}
+		out += lead + line.substr(0, cut) + "\n";
+		line.erase(0, cut);
+		while (!line.empty() && line[0] == ' ') line.erase(0, 1);
+		first = false;
+	}
+}
+
+static void card_lines(std::vector<std::string> &lines)
+{
+	lines.clear();
+	FILE *f = fopen(PITREX_CARD_LOG, "r");
+	if (!f) return;
+	char buf[1024];
+	while (fgets(buf, sizeof(buf), f))
+	{
+		buf[strcspn(buf, "\r\n")] = 0;
+		if (buf[0]) lines.push_back(buf);
+	}
+	fclose(f);
+}
+
+static int card_progress_line(const std::string &l, int *pct)
+{
+	return sscanf(l.c_str(), "make_card: copying %d pct", pct) == 1;
+}
+
+static void card_build(int full)
+{
+	if (card_pid)
+	{
+		snprintf(notice, sizeof(notice), "The card is being built:\nplease wait.");
+		return;
+	}
+	const char *argv[] = { "make_card", "--make-card", full ? NULL : "--if-needed", NULL };
+	pitrex_spawn_opt o = { dirs.pitrex, PITREX_CARD_LOG, 0, 0, 0, NULL };
+	card_pid = pitrex_spawn(self_exe, argv, &o);
+	if (card_pid <= 0)
+	{
+		card_pid = 0;
+		pitrex_log("cannot start the card builder (%s --make-card)", self_exe);
+		snprintf(notice, sizeof(notice), "Cannot start the card builder.");
+		return;
+	}
+	card_full = full;
+	card_timer = card_refresh = 0;
+	card_shown.clear();
+	card_result.clear();
+	pitrex_log("card build started from the OSD (%s)", full ? "build" : "if changed");
+}
+
+int pitrex_osd_option(const char *opt)
+{
+	int full = !strcmp(opt, OSD_BUILD);
+	if (!full && strcmp(opt, OSD_REBUILD)) return 0;
+	init();
+	card_build(full);
+	return 1;
+}
+
+// While it runs: its last line in the OSD's info box, while the menu is closed. At the end: a summary, kept until the menu is closed.
+static void card_poll()
+{
+	if (!card_pid || !CheckTimer(card_timer)) return;
+	card_timer = GetTimer(250);
+
+	std::vector<std::string> lines;
+	int status = 0, pct;
+	if (waitpid(card_pid, &status, WNOHANG) != card_pid)
+	{
+		card_lines(lines);
+		std::string text = "Building the UVMC2 card\n\n";
+		if (!lines.empty())
+		{
+			if (card_progress_line(lines.back(), &pct)) text += "Copying the files: " + std::to_string(pct) + " %\n";
+			else card_wrap(text, lines.back(), "  ");
+		}
+		// shown again before the last one times out
+		if (text != card_shown || CheckTimer(card_refresh))
+		{
+			card_shown = text;
+			card_refresh = GetTimer(1000);
+			if (!user_io_osd_is_visible()) Info(text.c_str(), 1500);
+		}
+		return;
+	}
+
+	card_pid = 0;
+	int rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+	pitrex_log("card build ended, exit status %d (log %s)", rc, PITREX_CARD_LOG);
+	card_lines(lines);
+	std::string body;
+	int n = 0;
+	for (auto &l : lines)
+	{
+		if (card_progress_line(l, &pct) || l == "make_card: formatting" || l == "make_card: formatted") continue;
+		card_wrap(body, l, "  ");
+		n++;
+	}
+	if (!n) body = rc ? "The builder stopped.\n" : "Up to date: nothing to do.\n";
+	// the end matters most (the error, the cards made): at most 12 lines
+	size_t at = body.size();
+	for (int k = 0; k < 13 && at > 0; k++)
+	{
+		at = body.rfind('\n', at - 1);
+		if (at == std::string::npos) { at = 0; break; }
+	}
+	if (at > 0) body = "...\n" + body.substr(at + 1);
+	card_result = std::string(rc ? "UVMC2 card NOT built" : card_full ? "UVMC2 card built" : "UVMC2 card") + "\n\n" + body;
+	while (!card_result.empty() && card_result.back() == '\n') card_result.pop_back();
+}
+
 void pitrex_poll()
 {
 	init();
@@ -412,6 +573,13 @@ void pitrex_poll()
 	{
 		Info(notice, 4000);
 		notice[0] = 0;
+	}
+
+	card_poll();
+	if (!card_result.empty() && !user_io_osd_is_visible())
+	{
+		Info(card_result.c_str(), 10000);
+		card_result.clear();
 	}
 
 	switch (state)

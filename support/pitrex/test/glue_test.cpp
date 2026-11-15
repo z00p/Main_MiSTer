@@ -33,7 +33,7 @@ static char osd_visible;
 static uint32_t st_orient, st_view;
 static int status_sets, status_saves;
 static char saved_name[64];
-static char info_text[256];
+static char info_text[1024];
 
 char *user_io_get_core_name(int orig) { return orig ? orig_name : core_name; }
 const char *getRootDir() { return root; }
@@ -256,7 +256,7 @@ int main(int argc, char **argv)
 	run_for(3000);
 	check(count("TERM message") >= 1, "notice stopped");
 	check(count("IMG=Card1.um2 FC=30000 SD=sd.img ") == 1, "then the game on sd.img");
-	check(count("make_card --check") == 1, "the check was main-pitrex --make-card --check");
+	check(count("make_card [--check]") == 1, "the check was main-pitrex --make-card --check");
 	printf("        longest poll call: %lu ms\n", max_poll);
 	check(max_poll < 250, "no poll call took 250 ms or more (the 0.3 s check and the 3 s notice run beside Main)");
 	pitrex_stop();
@@ -322,6 +322,63 @@ int main(int argc, char **argv)
 	check(count("ptx My_Prog") == 1, "runs as /tmp/ptx/My_Prog");
 	pitrex_stop();
 	check(count("TERM ptx") == 1, "stopped with SIGTERM");
+
+	printf("== the core's OSD: Main's own lines build the UVMC2 card, with the progress in the OSD\n");
+	{
+		char cs[512] = "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;R7,Reset;V,v1.0.261115";
+		pitrex_confstr(cs, sizeof(cs));
+		check(!strcmp(cs, "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;R7,Reset;V,v1.0.261115;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed"),
+			"two lines added at the end of our core's menu");
+		char cs2[512] = "Vectrex-PiTrex;;-;R7,Reset;";
+		pitrex_confstr(cs2, sizeof(cs2));
+		check(!strcmp(cs2, "Vectrex-PiTrex;;-;R7,Reset;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed"), "no empty field after a trailing ;");
+		char cs3[512] = "VECTREX;;-;R0,Reset;V,v1";
+		pitrex_confstr(cs3, sizeof(cs3));
+		check(!strcmp(cs3, "VECTREX;;-;R0,Reset;V,v1"), "another core (the official Vectrex): nothing added");
+		char cs4[40] = "Vectrex-PiTrex;;-;R7,Reset";
+		pitrex_confstr(cs4, sizeof(cs4));
+		check(strlen(cs4) == sizeof(cs4) - 1, "a full conf string is not overrun");
+		check(!pitrex_osd_option("R7,Reset") && !pitrex_osd_option("R[61],Build") && !pitrex_osd_option("T[61],Build UVMC2 card"),
+			"the core's own lines are not ours (nothing started)");
+	}
+	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: card folder: 3 files, 1 MiB (skipped: nothing)'\necho 'make_card: copying 50 pct' >&2\nsleep 1\n"
+		"echo 'make_card: done: %s/pitrex/uvmc2/sd.img (the old one is sd.img.bak)'\nexit 0\n", root);
+	fclose(f);
+	info_text[0] = 0;
+	max_poll = 0;
+	check(pitrex_osd_option("R[61],Build UVMC2 card") == 1, "Build UVMC2 card: ours, handled");
+	run_for(500);
+	check(count("make_card []") == 1, "... as main-pitrex --make-card (a full build)");
+	check(strstr(info_text, "Building the UVMC2 card") && strstr(info_text, "Copying the files: 50 %"), "progress in the OSD");
+	check(pitrex_osd_option("R[62],Rebuild card if changed") == 1 && count("make_card [--if-needed]") == 0, "a second build while one runs: not started");
+	snprintf(path, sizeof(path), "%s/Plain.um2", U);
+	int plain_starts = count("IMG=Plain.um2");
+	pick(path);
+	run_for(300);
+	check(count("--message CARD BEING BUILT|PLEASE WAIT") == 1 && count("IMG=Plain.um2") == plain_starts, "a game picked meanwhile: refused (the card is locked)");
+	osd_visible = 1;
+	run_for(1500);
+	check(!strstr(info_text, "UVMC2 card built"), "the result waits while the OSD is open");
+	osd_visible = 0;
+	run_for(100);
+	check(strstr(info_text, "UVMC2 card built\n\ncard folder: 3 files, 1 MiB") && strstr(info_text, "done: pitrex/uvmc2/sd.img"), "then the summary, storage folder left out");
+	check(!strstr(info_text, "copying") && !strstr(info_text, root), "... without the progress lines");
+	check(max_poll < 250, "Main never waited for the builder");
+
+	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: ERROR: a UVMC2 game is running and may be writing to its card: stop it first (Scripts > PiTrex_Stop)'\nexit 1\n");
+	fclose(f);
+	check(pitrex_osd_option("R[62],Rebuild card if changed") == 1, "Rebuild card if changed: ours, handled");
+	run_for(800);
+	check(count("make_card [--if-needed]") == 1, "... as main-pitrex --make-card --if-needed");
+	// wrapped at 30 characters a line
+	check(!!strstr(info_text, "UVMC2 card NOT built\n\nERROR: a game is using the\n  card. Reset the core (OSD\n  Reset), then try again."),
+		"a refusal: said in the OSD in Main's words");
+	check(!strstr(info_text, "PiTrex_Stop"), "... not the script's");
+	pitrex_stop();
 
 	printf("== Main's process is left as it was\n");
 	check(waitpid(-1, NULL, WNOHANG) <= 0, "no child left to reap");

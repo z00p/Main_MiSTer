@@ -2801,7 +2801,8 @@ void HandleUI(void)
 						{
 							int bit;
 							int ex = (p[0] == 't') || (p[0] == 'r');
-							if (user_io_status_bits(p + 1, &bit, 0, ex) == 1)
+							if (is_pitrex() && pitrex_osd_option(p)) menustate = MENU_NONE1;
+							else if (user_io_status_bits(p + 1, &bit, 0, ex) == 1)
 							{
 								const char *opt = p + 1;
 								if (!bit && (is_x86() || is_pcxt() || is_pcat286()))

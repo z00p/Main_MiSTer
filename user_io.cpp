@@ -3137,6 +3137,7 @@ void user_io_read_confstr()
 
 	cfgstr[j++] = 0;
 	DisableIO();
+	pitrex_confstr(cfgstr, sizeof(cfgstr));
 }
 
 

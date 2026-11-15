@@ -14,10 +14,17 @@ UM2_OBJ   = $(UM2_SRC:%.c=$(BUILDDIR)/%.um2.o)
 UM2_ALL   = $(BUILDDIR)/$(UM2_DIR)/um2run_all.o
 UM2_CFLAGS = -O2 -Wall -Wextra -Wno-unused-parameter -pthread -I$(UM2_DIR) -Dmain=um2run_main
 
+# um2run's speed depends on the compiler: on the MiSTer (15 Nov 2026) the same source built with gcc 10.2 (this
+# toolchain) ran games 5-9 % slower than with gcc 14. UM2_CC names another C compiler for um2run alone; UM2_INC then
+# points it at this toolchain's C library headers, so it links against the MiSTer's glibc, e.g.
+#   make UM2_CC=arm-linux-gnueabihf-gcc UM2_INC="-nostdinc -isystem <gcc 14 include> -isystem <this toolchain>/arm-none-linux-gnueabihf/libc/usr/include"
+UM2_CC   ?= $(CC)
+UM2_INC  ?=
+
 $(BUILDDIR)/$(UM2_DIR)/%.um2.o: $(UM2_DIR)/%.c $(wildcard $(UM2_DIR)/*.h)
 	@mkdir -p $(dir $@)
 	$(Q)$(info $<)
-	$(Q)$(CC) $(UM2_CFLAGS) -c -o $@ $< 2>&1 | $(OUTPUT_FILTER)
+	$(Q)$(UM2_CC) $(UM2_INC) $(UM2_CFLAGS) -c -o $@ $< 2>&1 | $(OUTPUT_FILTER)
 
 $(UM2_ALL): $(UM2_OBJ)
 	$(Q)$(info $@)

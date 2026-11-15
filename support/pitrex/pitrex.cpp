@@ -171,7 +171,7 @@ static void show(const char *text)
 	if (running()) return;
 
 	static const char *env[] = { "PTX_BACKEND=mister", NULL };
-	const char *argv[] = { self_exe, "--um2run", "--message", text, NULL };
+	const char *argv[] = { "um2run", "--um2run", "--message", text, NULL };
 	pitrex_spawn_opt o = { "/tmp", "/tmp/um2msg.log", 0, 49, 1, env };
 	pid_t pid = pitrex_spawn(self_exe, argv, &o);
 	group_started(pid > 0 ? pid : 0, 0);
@@ -243,10 +243,11 @@ static void launch_um2()
 	static pitrex_um2_launch l;
 	pitrex_um2_launch_make(&dirs, &plan, sched, getenv("PTX_LEAD"), &l);
 
-	// argv: this Main in worker mode, then um2run's own arguments
+	// argv: this Main in worker mode, then um2run's own arguments. Its argv[0] is "um2run" (the program
+	// run is still self_exe), so ps, pidof and killall see the game as um2run, as before.
 	const char *argv[100];
 	int n = 0;
-	argv[n++] = self_exe;
+	argv[n++] = "um2run";
 	argv[n++] = "--um2run";
 	for (int i = 1; i < l.argc && n < 99; i++) argv[n++] = l.argv[i];
 	argv[n] = NULL;

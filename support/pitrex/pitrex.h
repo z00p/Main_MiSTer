@@ -18,4 +18,7 @@ void pitrex_stop();
 // main-pitrex --um2run ...: run um2run instead of Main (pitrex_worker.cpp)
 int  pitrex_worker_main(int argc, char *argv[]);
 
+// main-pitrex --make-card [--if-needed | --check]: build the UVMC2 card instead of running Main (pitrex_card.cpp)
+#include "pitrex_card.h"
+
 #endif

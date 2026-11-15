@@ -200,6 +200,13 @@ if true; then
 	mkdir -p "$G/pitrex/um2run" "$G/pitrex/uvmc2" "$GU" "$W/bin"
 	cat > "$G/pitrex/um2run/um2run" <<'EOF'
 #!/bin/bash
+# the card check, main-pitrex --make-card --check: does what ../card_check.sh says (exit 0, the card is current, if there is none)
+if [ "$1" = --make-card ]; then
+	echo "make_card $2" >> "$EV"
+	c=$(dirname "$0")/../card_check.sh
+	[ -f "$c" ] && exec sh "$c"
+	exit 0
+fi
 [ "$1" = --um2run ] || { echo "not started as main-pitrex --um2run: $*" >> "$EV"; exit 9; }
 shift
 if [ "$1" = --message ]; then

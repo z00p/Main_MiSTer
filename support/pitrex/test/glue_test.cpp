@@ -244,8 +244,9 @@ int main(int argc, char **argv)
 	printf("== card out of date: notice on the Vectrex for 3 s, then the game; Main never waits\n");
 	snprintf(path, sizeof(path), "%s/pitrex/uvmc2/sd.img", root);
 	fclose(fopen(path, "w"));
-	snprintf(path, sizeof(path), "%s/pitrex/make_card.sh", root);
-	FILE *f = fopen(path, "w"); fprintf(f, "#!/bin/sh\nsleep 0.3\nexit 1\n"); fclose(f);
+	// what the stand-in's --make-card --check does (run_tests.sh): this script, if there is one
+	snprintf(path, sizeof(path), "%s/pitrex/card_check.sh", root);
+	FILE *f = fopen(path, "w"); fprintf(f, "sleep 0.3\nexit 1\n"); fclose(f);
 	snprintf(path, sizeof(path), "%s/Card1.um2", U);
 	max_poll = 0;
 	pick(path);
@@ -255,13 +256,14 @@ int main(int argc, char **argv)
 	run_for(3000);
 	check(count("TERM message") >= 1, "notice stopped");
 	check(count("IMG=Card1.um2 FC=30000 SD=sd.img ") == 1, "then the game on sd.img");
+	check(count("make_card --check") == 1, "the check was main-pitrex --make-card --check");
 	printf("        longest poll call: %lu ms\n", max_poll);
 	check(max_poll < 250, "no poll call took 250 ms or more (the 0.3 s check and the 3 s notice run beside Main)");
 	pitrex_stop();
 
 	printf("== Vector Pinball without its scale card: notice, then check, then the game\n");
-	snprintf(path, sizeof(path), "%s/pitrex/make_card.sh", root);
-	f = fopen(path, "w"); fprintf(f, "#!/bin/sh\nexit 0\n"); fclose(f);
+	snprintf(path, sizeof(path), "%s/pitrex/card_check.sh", root);
+	f = fopen(path, "w"); fprintf(f, "exit 0\n"); fclose(f);
 	snprintf(path, sizeof(path), "%s/Vector Pinball.um2", U);
 	pick(path);
 	run_for(500);

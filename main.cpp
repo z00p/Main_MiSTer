@@ -42,6 +42,8 @@ int main(int argc, char *argv[])
 {
 	// Vectrex-PiTrex: main-pitrex --um2run runs um2run, not Main (support/pitrex/pitrex_worker.cpp)
 	if (argc > 1 && !strcmp(argv[1], "--um2run")) return pitrex_worker_main(argc, argv);
+	// ... and main-pitrex --make-card builds the UVMC2 card (support/pitrex/pitrex_card.cpp)
+	if (argc > 1 && !strcmp(argv[1], "--make-card")) return pitrex_card_main(argv[0], argc > 2 ? argv[2] : "");
 
 	// Always pin main worker process to core #1 as core #0 is the
 	// hardware interrupt handler in Linux.  This reduces idle latency

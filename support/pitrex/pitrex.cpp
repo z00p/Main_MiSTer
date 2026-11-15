@@ -275,15 +275,14 @@ static void launch_um2()
 		plan.sd[0] ? plan.sd : "none", plan.args[0] ? " args=" : "", plan.args);
 }
 
+// a made card (sd.img or a scale copy) is checked against the card folder first: this Main's own card builder, --make-card --check
 static void check_card()
 {
-	char mc[1100];
-	snprintf(mc, sizeof(mc), "%s/make_card.sh", dirs.pitrex);
-	if (plan.check_card && pitrex_is_file(mc))
+	if (plan.check_card)
 	{
-		const char *argv[] = { "bash", mc, "--check", NULL };
+		const char *argv[] = { "make_card", "--make-card", "--check", NULL };
 		pitrex_spawn_opt o = { dirs.pitrex, NULL, 0, 0, 0, NULL };
-		check_pid = pitrex_spawn("/bin/bash", argv, &o);
+		check_pid = pitrex_spawn(self_exe, argv, &o);
 		if (check_pid > 0)
 		{
 			state = ST_CHECK;

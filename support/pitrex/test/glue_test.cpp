@@ -110,10 +110,29 @@ static int count(const char *text)
 static int alive(const char *what)
 {
 	char pattern[1024], cmd[1200];
-	if (!strcmp(what, "bus")) snprintf(pattern, sizeof(pattern), "um2run [-]-bus .*%s/", root);
-	else snprintf(pattern, sizeof(pattern), "%s/pitrex/um2run/um2run [-]-message", root);
+	if (!strcmp(what, "bus")) snprintf(pattern, sizeof(pattern), "um2run [-]-um2run --bus .*%s/", root);
+	else snprintf(pattern, sizeof(pattern), "%s/pitrex/um2run/um2run [-]-um2run --message", root);
 	snprintf(cmd, sizeof(cmd), "pgrep -f '%s' > /dev/null", pattern);
 	return !system(cmd);
+}
+
+// lines of Main's log (/tmp/pitrexd.log) written since 'from' (its size before) that hold text
+static int log_count(long from, const char *text)
+{
+	FILE *f = fopen("/tmp/pitrexd.log", "r");
+	if (!f) return 0;
+	fseek(f, from, SEEK_SET);
+	char line[2048];
+	int n = 0;
+	while (fgets(line, sizeof(line), f)) if (strstr(line, text)) n++;
+	fclose(f);
+	return n;
+}
+
+static long log_size()
+{
+	struct stat st;
+	return stat("/tmp/pitrexd.log", &st) ? 0 : (long)st.st_size;
 }
 
 static int to_core;   // files Main sent to the core (user_io_file_tx)
@@ -156,7 +175,7 @@ int main(int argc, char **argv)
 		check(!strcmp(got, want), "pitrex_main names this Main (pid and program) for pitrexd to stand aside");
 	}
 
-	printf("== a pick starts the game through mister_run.sh\n");
+	printf("== a pick starts the game: this Main, as main-pitrex --um2run\n");
 	snprintf(path, sizeof(path), "%s/cart.bin", U);
 	pick(path);
 	run_for(200);
@@ -199,6 +218,28 @@ int main(int argc, char **argv)
 	pick(path);
 	run_for(3500);
 	check(count("IMG=Short.um2") == 1 && !pitrex_active(), "after the game ends Main's poll timeout is back to 0");
+	check(count("--message GAME STOPPED") == 0, "exit 0: nothing shown");
+
+	printf("== game dies by itself: said on the Vectrex and in the log\n");
+	long lf = log_size();
+	snprintf(path, sizeof(path), "%s/Crash.um2", U);
+	pick(path);
+	run_for(1500);
+	check(count("um2run --message GAME STOPPED|EXIT STATUS 3") == 1, "GAME STOPPED|EXIT STATUS 3 on the Vectrex");
+	check(log_count(lf, "um2run Crash.um2 ended by itself, exit status 3") == 1, "... and in the log");
+	pitrex_stop();
+	check(!alive("message") && !pitrex_active(), "the message stops with the next core change");
+
+	printf("== game ends after a reset from the OSD: logged, nothing shown\n");
+	lf = log_size();
+	int msgs = count("--message GAME STOPPED");
+	snprintf(path, sizeof(path), "%s/Reset.um2", U);
+	pick(path);
+	run_for(1500);
+	check(count("--message GAME STOPPED") == msgs, "nothing shown on the Vectrex");
+	check(log_count(lf, "um2run Reset.um2 stopped: the core was reset from the OSD (cause 0x04)") == 1, "the reset is in the log");
+	check(!pitrex_active(), "nothing left running");
+	check(count("not started as main-pitrex --um2run") == 0, "every start was main-pitrex --um2run");
 
 	printf("== card out of date: notice on the Vectrex for 3 s, then the game; Main never waits\n");
 	snprintf(path, sizeof(path), "%s/pitrex/uvmc2/sd.img", root);

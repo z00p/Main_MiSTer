@@ -15,4 +15,7 @@ int  pitrex_file_selected(const char *path); // 1: ours (.um2/.ptx), not sent to
 void pitrex_poll();
 void pitrex_stop();
 
+// main-pitrex --um2run ...: run um2run instead of Main (pitrex_worker.cpp)
+int  pitrex_worker_main(int argc, char *argv[]);
+
 #endif

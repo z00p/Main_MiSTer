@@ -146,14 +146,7 @@ const char *pitrex_um2_refusal(const pitrex_dirs *d, const char *img)
 		return PITREX_MSG_ONE_CPU;
 	}
 
-	char a[1100], b[1100];
-	snprintf(a, sizeof(a), "%s/um2run", d->um2);
-	snprintf(b, sizeof(b), "%s/mister_run.sh", d->um2);
-	if (!pitrex_is_file(a) || !pitrex_is_file(b))
-	{
-		pitrex_log("REFUSED %s: %s/um2run or mister_run.sh missing", base_name(img), d->um2);
-		return PITREX_MSG_NO_UM2RUN;
-	}
+	// um2run is part of Main (main-pitrex --um2run): nothing else has to be installed
 	return NULL;
 }
 
@@ -547,4 +540,183 @@ int pitrex_irq_restore(const char *saved)
 	}
 	unlink(saved);
 	return ok;
+}
+
+int pitrex_irq_to_cpu1(const char *proc, const char *saved)
+{
+	char path[1100], line[512];
+	snprintf(path, sizeof(path), "%s/interrupts", proc);
+	FILE *f = fopen(path, "r");
+	if (!f) return -1;
+
+	int irq = -1;
+	while (irq < 0 && fgets(line, sizeof(line), f))
+	{
+		char *c = strchr(line, ':');
+		if (!c || !strstr(c, "dwc2")) continue;
+		*c = 0;
+		char *s = line;
+		while (*s == ' ') s++;
+		if (*s && all_digits(s)) irq = atoi(s);
+	}
+	fclose(f);
+	if (irq < 0) return -1;
+
+	char mask[64] = {};
+	snprintf(path, sizeof(path), "%s/irq/%d/smp_affinity", proc, irq);
+	f = fopen(path, "r");
+	if (!f) return -1;
+	if (!fgets(mask, sizeof(mask), f)) mask[0] = 0;
+	fclose(f);
+	mask[strcspn(mask, "\r\n")] = 0;
+	if (!mask[0]) return -1;
+
+	f = fopen(saved, "w");
+	if (!f) return -1;
+	fprintf(f, "%d %s\n", irq, mask);
+	fclose(f);
+
+	f = fopen(path, "w");
+	if (!f) return -1;
+	fprintf(f, "2\n");
+	fclose(f);
+	return irq;
+}
+
+// " w " in " list ", words split at blanks, as mister_run.sh's case " $ft " in *" w "* does
+static int has_word(const char *list, const char *w)
+{
+	size_t n = strlen(w);
+	const char *s = list;
+	while (*s)
+	{
+		while (*s && isspace((unsigned char)*s)) s++;
+		const char *e = s;
+		while (*e && !isspace((unsigned char)*e)) e++;
+		if ((size_t)(e - s) == n && !strncmp(s, w, n)) return 1;
+		s = e;
+	}
+	return 0;
+}
+
+int pitrex_um2_sched(const char *um2dir, const char *env, char *out, size_t size)
+{
+	char path[1100];
+	snprintf(path, sizeof(path), "%s/FAIR_TEST", um2dir);
+	FILE *f = fopen(path, "r");
+	if (f)
+	{
+		size_t n = fread(out, 1, size - 1, f);
+		fclose(f);
+		out[n] = 0;
+		for (char *s = out; *s; s++) if (*s == '\n' || *s == '\r' || *s == '\t') *s = ' ';
+		while (n && out[n - 1] == ' ') out[--n] = 0;
+		return 1;
+	}
+	snprintf(out, size, "%s", env && env[0] ? env : PITREX_SCHED_DEFAULT);
+	return 0;
+}
+
+int pitrex_um2_launch_make(const pitrex_dirs *d, const pitrex_um2_plan *p, const char *sched, const char *lead, pitrex_um2_launch *l)
+{
+	// the words mister_run.sh got after the image
+	char wbuf[4096];
+	const char *w[64];
+	int wn = pitrex_um2_argv(p, wbuf, sizeof(wbuf), w, 64);
+
+	memset(l, 0, sizeof(*l));
+	arg_buf a = { l->buf, sizeof(l->buf), 0, l->argv, 0, (int)(sizeof(l->argv) / sizeof(l->argv[0])) };
+
+	int hold = 1, place = 1;
+	for (int i = 3; i < wn; i++)
+	{
+		if (!strcmp(w[i], "--no-hold")) hold = 0;
+		if (!strcmp(w[i], "--cpu") || !strcmp(w[i], "--rt")) place = 0;
+	}
+
+	arg_add(&a, "um2run");
+	arg_add(&a, "--bus");
+	if (hold) arg_add(&a, "--hold");
+	int first = a.argc;
+	if (place)
+	{
+		// Main passes its own SETTLE / CPU1_AFTER, so mister_run.sh's guard after a core load never applied
+		arg_add(&a, "--cpu"); arg_add(&a, "0");
+		arg_add(&a, "--cpu1"); arg_add(&a, "1");
+		arg_add(&a, "--donate"); arg_add(&a, "3000");
+		arg_add(&a, "--settle"); arg_add(&a, p->settle[0] ? p->settle : "1");
+		arg_add(&a, "--cpu1-after"); arg_add(&a, p->cpu1_after[0] ? p->cpu1_after : "0");
+	}
+	for (int i = 3; i < wn; i++) if (strcmp(w[i], "--no-hold")) arg_add(&a, w[i]);
+
+	char rom[1100];
+	snprintf(rom, sizeof(rom), "%s/rp2350_bootrom.bin", d->um2);
+	if (pitrex_is_file(rom))
+	{
+		arg_add(&a, "--bootrom");
+		arg_add(&a, rom);
+	}
+
+	if (has_word(sched, "nonice")) arg_add(&a, "--no-nice");
+	if (has_word(sched, "share"))
+	{
+		// the first --donate 3000 becomes 6000 (mister_run.sh: sed 's/--donate 3000/--donate 6000/')
+		for (int i = first; i + 1 < a.argc; i++)
+		{
+			if (!strcmp(l->argv[i], "--donate") && !strcmp(l->argv[i + 1], "3000"))
+			{
+				l->argv[i + 1] = "6000";
+				break;
+			}
+		}
+	}
+	if (has_word(sched, "rt0")) arg_add(&a, "--cpu1-normal");
+	arg_add(&a, p->img);
+	l->argv[a.argc] = NULL;
+	l->argc = a.argc;
+
+	l->rt_prio = has_word(sched, "rt") ? 50 : 0;
+	l->irq1 = has_word(sched, "irq1");
+	snprintf(l->lead, sizeof(l->lead), "PTX_LEAD=%s", lead && lead[0] ? lead : "1");
+	l->env[0] = l->lead;
+	l->env[1] = "PTX_BACKEND=mister";
+	l->env[2] = "PTX_WAIT_CORE=60";
+	l->env[3] = NULL;
+	return l->argc;
+}
+
+int pitrex_um2_reset_cause(const char *log)
+{
+	FILE *f = fopen(log, "r");
+	if (!f) return -1;
+
+	int cause = -1;
+	char line[1024];
+	while (fgets(line, sizeof(line), f))
+	{
+		const char *r = strstr(line, "core was reset");
+		const char *c = r ? strstr(r, "cause 0x") : NULL;
+		if (c && isxdigit((unsigned char)c[8]) && isxdigit((unsigned char)c[9]) && c[10] == ')')
+		{
+			cause = (int)strtol(c + 8, NULL, 16);
+		}
+	}
+	fclose(f);
+	return cause;
+}
+
+int pitrex_exit_code(int wait_status)
+{
+	if (WIFEXITED(wait_status)) return WEXITSTATUS(wait_status);
+	if (WIFSIGNALED(wait_status)) return 128 + WTERMSIG(wait_status);
+	return 255;
+}
+
+int pitrex_um2_end(int wait_status, int reset_cause)
+{
+	// mister_run.sh's rules, in the shell's numbers (128 + signal)
+	int rc = pitrex_exit_code(wait_status);
+	if (rc == 0 || rc == 137 || rc == 143) return PITREX_END_QUIET;           // ended normally, SIGKILL, SIGTERM: stopped on purpose
+	if (reset_cause >= 0 && (reset_cause & 0x4C)) return PITREX_END_RESET;   // OSD reset, file load or BIOS load: the player's doing
+	return PITREX_END_CRASH;                                                 // anything else, other signals too: it died by itself
 }

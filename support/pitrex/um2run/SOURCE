@@ -1,0 +1,2 @@
+Vectrex_MiSTer b9dce53dd5169111ff338ae6906c146edc9101ff
+um2run: park only the threads that are not waiting for the core

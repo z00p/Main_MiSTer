@@ -1,8 +1,9 @@
 // Vectrex-PiTrex support.
 //
-// A .um2 file picked in the OSD is started through pitrex/um2run/mister_run.sh with
-// the settings of its sidecar <image>.um2.cfg; a .ptx file is copied to /tmp/ptx and
-// run. The program runs in its own process group and is stopped on the next pick and
+// A .um2 file picked in the OSD is run by um2run, which is built into this Main
+// (main-pitrex --um2run ..., see pitrex_worker.cpp), with the settings of its sidecar
+// <image>.um2.cfg and mister_run.sh's placement and priority; a .ptx file is copied to
+// /tmp/ptx and run. The program runs in its own process group and is stopped on the next pick and
 // before any core load. Problems are shown on the Vectrex (um2run --message) and in
 // the OSD. The rules are pitrexd.sh's, which did this from outside Main.
 
@@ -27,6 +28,7 @@
 #define PITREX_LOG       "/tmp/pitrexd.log"
 #define PITREX_IRQ_SAVED "/tmp/ft_irq_saved"
 #define PITREX_PTX_DIR   "/tmp/ptx"
+#define PITREX_UM2_LOG   "/tmp/um2.log"
 #ifndef PITREX_MAIN_FILE
 #define PITREX_MAIN_FILE "/tmp/pitrex_main"
 #endif
@@ -48,6 +50,10 @@ static pitrex_um2_plan plan;
 static int state = ST_IDLE;
 static int after_notice;
 static pid_t group;        // the program or message started last (pid = process group)
+static int group_game;     // group is a .um2 game (its end is looked at)
+static int group_status;   // its wait status, once reaped
+static int group_reaped;
+static char self_exe[1024]; // this Main: um2run is its worker mode
 static pid_t check_pid;
 static unsigned long timer;
 static unsigned long alive_timer;
@@ -101,23 +107,41 @@ static void init()
 	// can later belong to another program (the stock Main, after a change to another core)
 	char exe[1024];
 	ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	if (n > 0) exe[n] = 0;
 	FILE *f = n > 0 ? fopen(PITREX_MAIN_FILE, "w") : NULL;
 	if (f)
 	{
-		exe[n] = 0;
 		fprintf(f, "%d %s\n", (int)getpid(), exe);
 		fclose(f);
 	}
+#ifdef PITREX_WORKER_EXE
+	snprintf(self_exe, sizeof(self_exe), "%s", PITREX_WORKER_EXE); // PC test: a stand-in for this Main
+#else
+	snprintf(self_exe, sizeof(self_exe), "%s", n > 0 ? exe : "/proc/self/exe");
+#endif
 	pitrex_log("main-pitrex: picks are started by Main");
 }
 
 static int running()
 {
 	if (!group) return 0;
-	waitpid(group, NULL, WNOHANG);
+	int status;
+	if (!group_reaped && waitpid(group, &status, WNOHANG) == group)
+	{
+		group_status = status;
+		group_reaped = 1;
+	}
 	if (pitrex_group_alive(group)) return 1;
 	group = 0;
 	return 0;
+}
+
+static void group_started(pid_t pid, int game)
+{
+	group = pid;
+	group_game = game;
+	group_reaped = 0;
+	group_status = 0;
 }
 
 static void stop_group()
@@ -125,8 +149,7 @@ static void stop_group()
 	if (!group) return;
 	if (pitrex_group_stop(group, "um2run", 2000)) pitrex_log("program did not exit on SIGTERM: killed");
 	group = 0;
-
-	// mister_run.sh puts the USB interrupt back itself, unless it was killed first
+	group_game = 0;
 	pitrex_irq_restore(PITREX_IRQ_SAVED);
 }
 
@@ -145,15 +168,13 @@ static void stop_all()
 // A pick that cannot start says why on the Vectrex for 20 s. Never over a running program.
 static void show(const char *text)
 {
-	char exe[1100];
-	snprintf(exe, sizeof(exe), "%s/um2run", dirs.um2);
-	if (!pitrex_is_exec(exe) || running()) return;
+	if (running()) return;
 
 	static const char *env[] = { "PTX_BACKEND=mister", NULL };
-	const char *argv[] = { exe, "--message", text, NULL };
-	pitrex_spawn_opt o = { dirs.um2, "/tmp/um2msg.log", 0, 49, 1, env };
-	group = pitrex_spawn(exe, argv, &o);
-	if (group < 0) group = 0;
+	const char *argv[] = { self_exe, "--um2run", "--message", text, NULL };
+	pitrex_spawn_opt o = { "/tmp", "/tmp/um2msg.log", 0, 49, 1, env };
+	pid_t pid = pitrex_spawn(self_exe, argv, &o);
+	group_started(pid > 0 ? pid : 0, 0);
 }
 
 // ... and in the OSD, once it is closed
@@ -208,34 +229,43 @@ static void launch_um2()
 {
 	apply_display();
 
-	char buf[4096];
-	const char *argv[64];
-	pitrex_um2_argv(&plan, buf, sizeof(buf), argv, 64);
-
 	// No black-screen guard by default: Main starts the game after the core load and its video mode
 	// change, and idles while the game runs, so core 1 gets its own CPU at once (a sidecar can still
 	// set settle=/cpu1_after=). With the guard, games ran slow and their sound was rough for the first
 	// 10 s; without it, Pac-Man and Punch-Out started clean (John, 10 Nov 2026).
-	char settle[64], cpu1[64];
-	snprintf(settle, sizeof(settle), "SETTLE=%s", plan.settle[0] ? plan.settle : "1");
-	snprintf(cpu1, sizeof(cpu1), "CPU1_AFTER=%s", plan.cpu1_after[0] ? plan.cpu1_after : "0");
-
+	//
 	// Scheduling: mister_run.sh's own words (rt nonice irq1 share). Tried 10 Nov 2026: rt0 (core 1 at
 	// normal priority on CPU1, no fixed share) was clean with a wired pad, but a Bluetooth pad worked
 	// only in the OSD, not in the game, at nice -20 and at nice 0; at nice 0 the static came back too.
-	const char *env[] = { settle, cpu1, NULL };
+	char sched[256];
+	if (pitrex_um2_sched(dirs.um2, getenv("UM2_SCHED"), sched, sizeof(sched))) pitrex_log("FAIR_TEST: [%s]", sched[0] ? sched : "plain");
 
-	// mister_run.sh starts um2run in the background with its own priority and CPUs, then returns
-	pitrex_spawn_opt o = { dirs.um2, PITREX_LOG, 1, 0, 0, env };
-	pid_t pid = pitrex_spawn("/bin/sh", argv, &o);
+	static pitrex_um2_launch l;
+	pitrex_um2_launch_make(&dirs, &plan, sched, getenv("PTX_LEAD"), &l);
+
+	// argv: this Main in worker mode, then um2run's own arguments
+	const char *argv[100];
+	int n = 0;
+	argv[n++] = self_exe;
+	argv[n++] = "--um2run";
+	for (int i = 1; i < l.argc && n < 99; i++) argv[n++] = l.argv[i];
+	argv[n] = NULL;
+
+	pitrex_irq_restore(PITREX_IRQ_SAVED);
+	if (l.irq1) pitrex_irq_to_cpu1("/proc", PITREX_IRQ_SAVED);
+	rename(PITREX_UM2_LOG, "/tmp/um2.prev.log");
+
+	pitrex_spawn_opt o = { PathIsDir(dirs.um2, 0) ? dirs.um2 : "/tmp", PITREX_UM2_LOG, 0, l.rt_prio, 1, l.env };
+	pid_t pid = pitrex_spawn(self_exe, argv, &o);
 	if (pid < 0)
 	{
-		pitrex_log("cannot start %s/mister_run.sh", dirs.um2);
+		pitrex_irq_restore(PITREX_IRQ_SAVED);
+		pitrex_log("cannot start um2run (%s --um2run)", self_exe);
 		state = ST_IDLE;
 		return;
 	}
 
-	group = pid;
+	group_started(pid, 1);
 	alive_timer = GetTimer(100);
 	state = ST_RUN;
 
@@ -304,16 +334,49 @@ static void start_ptx(const char *f)
 	static const char *env[] = { "PTX_BACKEND=mister", NULL };
 	const char *argv[] = { dst, NULL };
 	pitrex_spawn_opt o = { PathIsDir(dirs.pitrex, 0) ? dirs.pitrex : "/tmp", "/tmp/pitrex.log", 0, 49, 1, env };
-	group = pitrex_spawn(dst, argv, &o);
-	if (group < 0)
+	pid_t pid = pitrex_spawn(dst, argv, &o);
+	if (pid < 0)
 	{
-		group = 0;
 		pitrex_log("cannot start %s", dst);
 		return;
 	}
+	group_started(pid, 0);
 	alive_timer = GetTimer(100);
 	state = ST_RUN;
 	pitrex_log("started %s from %s", name, f);
+}
+
+// A game that ended without Main stopping it: put the USB interrupt back, and say why
+// (in the log, and on the Vectrex if it died by itself; mister_run.sh did this before).
+static void game_ended()
+{
+	group_game = 0;
+	pitrex_irq_restore(PITREX_IRQ_SAVED);
+	if (!group_reaped) return;
+
+	int cause = pitrex_um2_reset_cause(PITREX_UM2_LOG);
+	int rc = pitrex_exit_code(group_status);
+	const char *name = strrchr(plan.img, '/');
+	name = name ? name + 1 : plan.img;
+
+	switch (pitrex_um2_end(group_status, cause))
+	{
+	case PITREX_END_RESET:
+		pitrex_log("um2run %s stopped: the core was reset from the OSD (cause 0x%02x)", name, cause);
+		break;
+
+	case PITREX_END_CRASH:
+		{
+			pitrex_log("um2run %s ended by itself, exit status %d, see %s", name, rc, PITREX_UM2_LOG);
+			char msg[64];
+			snprintf(msg, sizeof(msg), "GAME STOPPED|EXIT STATUS %d", rc);
+			show(msg);
+		}
+		break;
+
+	default:
+		break;
+	}
 }
 
 int pitrex_file_selected(const char *path)
@@ -395,7 +458,12 @@ void pitrex_poll()
 	if (group && CheckTimer(alive_timer))
 	{
 		alive_timer = GetTimer(100);
-		if (!running() && state == ST_RUN) state = ST_IDLE;
+		int game = group_game;
+		if (!running())
+		{
+			if (state == ST_RUN) state = ST_IDLE;
+			if (game) game_ended();
+		}
 	}
 }
 

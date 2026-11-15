@@ -34,11 +34,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "scheduler.h"
 #include "osd.h"
 #include "offload.h"
+#include "support/pitrex/pitrex.h"
 
 const char *version = "$VER:" VDATE;
 
 int main(int argc, char *argv[])
 {
+	// Vectrex-PiTrex: main-pitrex --um2run runs um2run, not Main (support/pitrex/pitrex_worker.cpp)
+	if (argc > 1 && !strcmp(argv[1], "--um2run")) return pitrex_worker_main(argc, argv);
+
 	// Always pin main worker process to core #1 as core #0 is the
 	// hardware interrupt handler in Linux.  This reduces idle latency
 	// in the main loop by about 6-7x.

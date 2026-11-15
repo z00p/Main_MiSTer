@@ -4,8 +4,11 @@
 //   pitrex_test plan <root> <cpus file> <core name> <image>   prints what a pick would do,
 //                                                            in the format of run_tests.sh's pitrexd harness
 //   pitrex_test get <file> <key>                             a sidecar value, as "[value]"
+//   pitrex_test launch <root> <image> <UM2_SCHED> <PTX_LEAD>  how um2run is started (priority, environment,
+//                                                            arguments), in the format of run_tests.sh's
+//                                                            harness around the real mister_run.sh
 //   pitrex_test proc <scratch dir>                           child process tests (PASS/FAIL lines)
-//   pitrex_test unit                                         small rules (PASS/FAIL lines)
+//   pitrex_test unit <scratch dir>                           small rules (PASS/FAIL lines)
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,11 +42,10 @@ static void check(int ok, const char *what)
 	if (!ok) fails++;
 }
 
-static void show(const pitrex_dirs *d, const char *text)
+// Main shows messages with its own um2run (main-pitrex --um2run --message): nothing has to be installed
+static void show(const pitrex_dirs *, const char *text)
 {
-	char exe[1100];
-	snprintf(exe, sizeof(exe), "%s/um2run", d->um2);
-	if (pitrex_is_exec(exe)) printf("SHOW %s\n", text);
+	printf("SHOW %s\n", text);
 }
 
 static int do_plan(const char *root, const char *cpus, const char *core, const char *img)
@@ -90,6 +92,28 @@ static int do_plan(const char *root, const char *cpus, const char *core, const c
 	printf("RUN SETTLE=%s C1=%s", p.settle, p.cpu1_after);
 	for (int i = 1; i < argc; i++) printf(" %s", argv[i]);
 	printf("\n");
+	return 0;
+}
+
+static int do_launch(const char *root, const char *img, const char *env, const char *lead)
+{
+	quiet = 1;
+	pitrex_dirs d;
+	pitrex_dirs_init(&d, root);
+	pitrex_um2_plan p;
+	pitrex_um2_plan_make(&d, img, &p);
+
+	char sched[256];
+	pitrex_um2_sched(d.um2, env, sched, sizeof(sched));
+	static pitrex_um2_launch l;
+	pitrex_um2_launch_make(&d, &p, sched, lead, &l);
+
+	printf("CHRT %s\n", l.rt_prio ? "-r 50" : "-o 0");
+	printf("ENV %s %s %s\n", l.env[0], l.env[1], l.env[2]);
+	printf("ARGS");
+	for (int i = 1; i < l.argc; i++) printf(" %s", l.argv[i]);
+	printf("\n");
+	printf("IRQ1 %d\n", l.irq1);
 	return 0;
 }
 
@@ -201,9 +225,54 @@ static int do_proc(const char *dir)
 	return 0;
 }
 
-static int do_unit()
+static int do_unit(const char *dir)
 {
-	char s[256];
+	char s[256], p[1100], q[1100];
+
+	// the USB interrupt to CPU1, on a made-up /proc
+	snprintf(p, sizeof(p), "%s/irq/57", dir);
+	snprintf(q, sizeof(q), "mkdir -p %s", p);
+	if (system(q)) return 1;
+	snprintf(p, sizeof(p), "%s/interrupts", dir);
+	write_file(p, "           CPU0       CPU1\n 29:      12345          0     GIC-0  29 Level     twd\n 57:     999999          0     GIC-0 157 Level     ffb40000.usb, dwc2_hsotg:usb1\n", 0644);
+	snprintf(p, sizeof(p), "%s/irq/57/smp_affinity", dir);
+	write_file(p, "3\n", 0644);
+	snprintf(q, sizeof(q), "%s/saved", dir);
+	check(pitrex_irq_to_cpu1(dir, q) == 57, "irq1: the dwc2 line is found (57)");
+	check(file_has(q, "57 3"), "irq1: old mask saved as '57 3'");
+	check(file_has(p, "2"), "irq1: mask is now 2 (CPU1)");
+	snprintf(p, sizeof(p), "%s/interrupts", dir);
+	write_file(p, "           CPU0       CPU1\n 29:      12345          0     GIC-0  29 Level     twd\n", 0644);
+	unlink(q);
+	check(pitrex_irq_to_cpu1(dir, q) == -1 && access(q, F_OK), "irq1: no dwc2 line: nothing done, nothing saved");
+
+	// what um2run said when the core dropped it
+	snprintf(p, sizeof(p), "%s/um2.log", dir);
+	write_file(p, "frame 1\num2run: the core was reset (cause 0x04)\nmore\n", 0644);
+	check(pitrex_um2_reset_cause(p) == 0x04, "reset cause 0x04 read from the log");
+	write_file(p, "um2run: the core was reset (cause 0x04)\num2run: the core was reset (cause 0x81)\n", 0644);
+	check(pitrex_um2_reset_cause(p) == 0x81, "reset cause: the last one counts");
+	write_file(p, "nothing here\n", 0644);
+	check(pitrex_um2_reset_cause(p) == -1, "no reset line: -1");
+	snprintf(p, sizeof(p), "%s/none.log", dir);
+	check(pitrex_um2_reset_cause(p) == -1, "no log: -1");
+
+	// exit codes as the shell gives them
+	check(pitrex_exit_code(3 << 8) == 3, "exit code: exit(3) is 3");
+	check(pitrex_exit_code(SIGKILL) == 137, "exit code: SIGKILL is 137");
+	check(pitrex_exit_code(SIGSEGV | 0x80) == 139, "exit code: SIGSEGV with a core dump is 139");
+
+	// what Main does when a game ends by itself (mister_run.sh's rules)
+	check(pitrex_um2_end(0, -1) == PITREX_END_QUIET, "end: exit 0 is quiet");
+	check(pitrex_um2_end(SIGTERM, -1) == PITREX_END_QUIET, "end: SIGTERM is quiet");
+	check(pitrex_um2_end(SIGKILL, -1) == PITREX_END_QUIET, "end: SIGKILL is quiet");
+	check(pitrex_um2_end(3 << 8, -1) == PITREX_END_CRASH, "end: exit 3, no reset: GAME STOPPED");
+	check(pitrex_um2_end(SIGSEGV, -1) == PITREX_END_CRASH, "end: SIGSEGV: GAME STOPPED");
+	check(pitrex_um2_end(3 << 8, 0x04) == PITREX_END_RESET, "end: exit 3 after an OSD reset (0x04): logged only");
+	check(pitrex_um2_end(3 << 8, 0x08) == PITREX_END_RESET, "end: exit 3 after a file load (0x08): logged only");
+	check(pitrex_um2_end(3 << 8, 0x40) == PITREX_END_RESET, "end: exit 3 after a BIOS load (0x40): logged only");
+	check(pitrex_um2_end(3 << 8, 0x01) == PITREX_END_CRASH, "end: exit 3 after another drop cause (0x01): GAME STOPPED");
+	check(pitrex_um2_end(0, 0x04) == PITREX_END_QUIET, "end: exit 0 is quiet even after a reset");
 	check(pitrex_file_kind("/a/b/Game.um2") == PITREX_KIND_UM2, "kind .um2");
 	check(pitrex_file_kind("/a/b/GAME.UM2") == PITREX_KIND_UM2, "kind .UM2 (any case)");
 	check(pitrex_file_kind("/a/b/prog.ptx") == PITREX_KIND_PTX, "kind .ptx");
@@ -233,9 +302,10 @@ int main(int argc, char **argv)
 		do_proc(argv[2]);
 		return fails ? 1 : 0;
 	}
-	if (argc == 2 && !strcmp(argv[1], "unit"))
+	if (argc == 6 && !strcmp(argv[1], "launch")) return do_launch(argv[2], argv[3], argv[4], argv[5]);
+	if (argc == 3 && !strcmp(argv[1], "unit"))
 	{
-		do_unit();
+		do_unit(argv[2]);
 		return fails ? 1 : 0;
 	}
 	fprintf(stderr, "usage: see the top of pitrex_test.cpp\n");

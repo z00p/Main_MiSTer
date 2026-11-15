@@ -23,7 +23,8 @@ g++ -O2 -Wall -Wextra -Wno-strict-aliasing -Wno-stringop-overflow -Wno-stringop-
 T=$W/pitrex_test
 
 echo "== 1. unit"
-"$T" unit || fails=$((fails+1))
+mkdir -p "$W/unit"
+"$T" unit "$W/unit" || fails=$((fails+1))
 
 echo "== 2. sidecar values: pitrex_cfg_get against pitrexd's cfg_get"
 eval "$(sed -n '/^cfg_get() {/,/^}/p' "$PD")"
@@ -128,28 +129,79 @@ fresh; printf 'orient=up\nview=wide\n' > "$U/O4.um2.cfg";                       
 fresh; printf 'orient=cw\n' > "$U/O5.um2.cfg"; echo -n VECTREX > "$TMP/CORENAME";         pk "core runs as VECTREX: orient skipped" O5.um2
 fresh; echo 0 > "$W/cpus";                                                                pk "one CPU online: refused with a message" Plain.um2
 fresh; : > "$W/cpus";                                                                     pk "CPU file empty: refused" Plain.um2
-fresh; rm "$R/pitrex/um2run/mister_run.sh";                                               pk "mister_run.sh missing: refused with a message" Plain.um2
-fresh; rm "$R/pitrex/um2run/um2run";                                                      pk "um2run missing: refused, no message (nothing to show it with)" Plain.um2
-fresh; chmod -x "$R/pitrex/um2run/um2run"; rm "$R/pitrex/um2run/mister_run.sh";           pk "um2run not executable: refused, no message" Plain.um2
+
+# Where Main differs from pitrexd on purpose: um2run is part of Main (main-pitrex --um2run), so nothing
+# under pitrex/um2run has to be installed
+mo() {   # mo <description>: Main starts Plain.um2
+	local b; touch "$U/Plain.um2"
+	b=$("$T" plan "$R" "$W/cpus" Vectrex-PiTrex "$U/Plain.um2" 2>/dev/null)
+	if echo "$b" | grep -q "^RUN " && ! echo "$b" | grep -q REFUSED; then pass "$1"; else fail "$1: $b"; fi
+}
+fresh; rm "$R/pitrex/um2run/mister_run.sh" "$R/pitrex/um2run/um2run";  mo "no um2run or mister_run.sh installed: Main starts the game"
+fresh; rm -r "$R/pitrex/um2run";                                         mo "no pitrex/um2run folder at all: Main starts the game"
+
+echo "== 3b. launch: how Main starts um2run, against the real mister_run.sh"
+# The RUN line Main's plan gives (checked against pitrexd above) is given to the real mister_run.sh, with a
+# fake um2run and chrt that write down what they were given; Main's own start must be the same.
+MR=${PD%/*}/../um2run/mister_run.sh
+if [ ! -f "$MR" ]; then fail "no mister_run.sh next to $PD"
+else
+	mkdir -p "$W/lbin"
+	printf '#!/bin/sh\necho "CHRT $1 $2" > "$LOUT.chrt"\nshift 2\nexec "$@"\n' > "$W/lbin/chrt"; chmod +x "$W/lbin/chrt"
+	lfresh() {
+		fresh; cp "$MR" "$R/pitrex/um2run/mister_run.sh"
+		printf '#!/bin/sh\n{ cat "$LOUT.chrt"; echo "ENV PTX_LEAD=$PTX_LEAD PTX_BACKEND=$PTX_BACKEND PTX_WAIT_CORE=$PTX_WAIT_CORE"; echo "ARGS $*"; } > "$LOUT.part"\nmv "$LOUT.part" "$LOUT"\n' > "$R/pitrex/um2run/um2run"
+		chmod +x "$R/pitrex/um2run/um2run"
+	}
+	lk() {   # lk <description> <game> <UM2_SCHED> <PTX_LEAD> <expected IRQ1>
+		local what=$1 img=$U/$2 run st c1 words a b i
+		[ -f "$img" ] || touch "$img"
+		run=$("$T" plan "$R" "$W/cpus" Vectrex-PiTrex "$img" 2>/dev/null | grep "^RUN ")
+		st=$(echo "$run" | sed -n 's/^RUN SETTLE=\([^ ]*\) .*/\1/p'); c1=$(echo "$run" | sed -n 's/^RUN SETTLE=[^ ]* C1=\([^ ]*\) .*/\1/p')
+		words=$(echo "$run" | sed 's/^RUN SETTLE=[^ ]* C1=[^ ]* \.\/mister_run\.sh //')
+		export LOUT=$W/lout; rm -f "$LOUT" "$LOUT.chrt"
+		# Main's plan words never hold quotes or spaces inside a word (paths with spaces are refused), so plain splitting is safe
+		( cd "$R/pitrex/um2run" && PATH=$W/lbin:$PATH SETTLE=${st:-1} CPU1_AFTER=${c1:-0} UM2_SCHED=$3 PTX_LEAD=$4 sh ./mister_run.sh $words > /dev/null 2>&1 )
+		i=0; while [ ! -f "$LOUT" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+		a=$(cat "$LOUT" 2>/dev/null; echo "IRQ1 $5")
+		b=$("$T" launch "$R" "$img" "$3" "$4" 2>/dev/null)
+		if [ "$a" = "$b" ]; then pass "$what"; echo "$b" | sed "s|$R|<fat>|g; s/^/       /"
+		else fail "$what"; echo "  mister_run.sh:"; echo "$a" | sed "s|$R|<fat>|g; s/^/    /"; echo "  Main:"; echo "$b" | sed "s|$R|<fat>|g; s/^/    /"; fi
+	}
+	lfresh;                                                       lk "default scheduling (rt nonice irq1 share)" Plain.um2 "" "" 1
+	lfresh;                                                       lk "UM2_SCHED=rt" Plain.um2 "rt" "" 0
+	lfresh;                                                       lk "UM2_SCHED='nonice irq1': normal priority" Plain.um2 "nonice irq1" "" 1
+	lfresh;                                                       lk "UM2_SCHED with rt0" Plain.um2 "rt nonice irq1 rt0" "" 1
+	lfresh;                                                       lk "PTX_LEAD=2 kept" Plain.um2 "" "2" 1
+	lfresh; echo frame_cycles=25000 > "$U/Fast.um2.cfg";          lk "sidecar frame_cycles" Fast.um2 "" "" 1
+	lfresh; printf 'settle=8\ncpu1_after=10\n' > "$U/Set.um2.cfg";  lk "sidecar settle / cpu1_after" Set.um2 "" "" 1
+	lfresh; echo 'args=--no-hold --ringmon' > "$U/NH.um2.cfg";    lk "sidecar --no-hold: no --hold, the word dropped" NH.um2 "" "" 1
+	lfresh; echo 'args=--cpu 1 --donate 3000' > "$U/Own.um2.cfg"; lk "sidecar picks its own CPU: no placement; share still makes 6000" Own.um2 "" "" 1
+	lfresh; echo 'args=--rt' > "$U/RT.um2.cfg";                   lk "sidecar --rt: no placement" RT.um2 "" "" 1
+	lfresh; touch "$R/pitrex/um2run/rp2350_bootrom.bin";          lk "boot ROM beside um2run: --bootrom" Plain.um2 "" "" 1
+	lfresh; touch "$R/pitrex/uvmc2/sd.img";                       lk "default card" Plain.um2 "" "" 1
+	lfresh; echo "rt irq1" > "$R/pitrex/um2run/FAIR_TEST";        lk "FAIR_TEST file wins over UM2_SCHED" Plain.um2 "nonice share" "" 1
+	lfresh; : > "$R/pitrex/um2run/FAIR_TEST";                     lk "empty FAIR_TEST: plain (no rt, no extras)" Plain.um2 "" "" 0
+	rm -f /tmp/ft_irq_saved
+fi
 
 echo "== 4. child processes"
 mkdir -p "$W/proc"
 "$T" proc "$W/proc" || fails=$((fails+1))
 
-echo "== 5. pitrex.cpp in a stubbed Main, with the real mister_run.sh and a fake um2run"
+echo "== 5. pitrex.cpp in a stubbed Main, with a fake um2run standing in for main-pitrex --um2run"
 # writes /tmp/um2.log, /tmp/pitrexd.log, /tmp/ptx/ as on the MiSTer
-MR=${PD%/*}/../um2run/mister_run.sh
-if [ ! -f "$MR" ]; then fail "no mister_run.sh next to $PD"
-else
+if true; then
 	MAIN=$(cd "$D/../../.." && pwd)
 	echo 0-1 > "$W/cpus"
 	g++ -O2 -Wall -Wextra -Wno-strict-aliasing -Wno-stringop-overflow -Wno-stringop-truncation -Wno-format-truncation -Wno-psabi -Wno-restrict -Werror \
-		-DPITREX_CPUS="\"$W/cpus\"" -DPITREX_MAIN_FILE="\"$W/pitrex_main\"" -I"$MAIN" -o "$W/glue_test" "$D/glue_test.cpp" "$D/../pitrex.cpp" "$D/../pitrex_lib.cpp" || { fail "glue_test build"; exit 1; }
+		-DPITREX_CPUS="\"$W/cpus\"" -DPITREX_MAIN_FILE="\"$W/pitrex_main\"" -DPITREX_WORKER_EXE="\"$W/glue/pitrex/um2run/um2run\"" -I"$MAIN" -o "$W/glue_test" "$D/glue_test.cpp" "$D/../pitrex.cpp" "$D/../pitrex_lib.cpp" || { fail "glue_test build"; exit 1; }
 	G=$W/glue; GU=$G/games/Vectrex-PiTrex/UVMC2
 	mkdir -p "$G/pitrex/um2run" "$G/pitrex/uvmc2" "$GU" "$W/bin"
-	cp "$MR" "$G/pitrex/um2run/mister_run.sh"
 	cat > "$G/pitrex/um2run/um2run" <<'EOF'
 #!/bin/bash
+[ "$1" = --um2run ] || { echo "not started as main-pitrex --um2run: $*" >> "$EV"; exit 9; }
+shift
 if [ "$1" = --message ]; then
 	echo "um2run --message $2" >> "$EV"
 	trap 'echo "TERM message" >> "$EV"; exit 0' TERM
@@ -159,13 +211,15 @@ fc=; sd=; prev=; for a; do case $prev in --frame-cycles) fc=$a ;; --sd) sd=$a ;;
 n=${img##*/}
 echo "um2run IMG=$n FC=$fc SD=${sd##*/} ARGS=$*" >> "$EV"
 trap 'echo "TERM $n" >> "$EV"; exit 0' TERM
-case $n in Short*) sleep 1; exit 0 ;; esac
+case $n in
+Short*) sleep 1; exit 0 ;;
+Crash*) sleep 0.5; exit 3 ;;
+Reset*) echo "um2run: the core was reset (cause 0x04)"; sleep 0.5; exit 3 ;;
+esac
 while :; do sleep 0.05; done
 EOF
 	chmod +x "$G/pitrex/um2run/um2run"
-	# real-time priority needs root: the fake chrt runs the program as it is
-	printf '#!/bin/sh\nshift 2\nexec "$@"\n' > "$W/bin/chrt"; chmod +x "$W/bin/chrt"
-	touch "$GU/Plain.um2" "$GU/Fast.um2" "$GU/Short.um2" "$GU/Card1.um2" "$GU/Vector Pinball.um2" "$GU/Land.um2" "$GU/cart.bin"
+	touch "$GU/Plain.um2" "$GU/Fast.um2" "$GU/Short.um2" "$GU/Crash.um2" "$GU/Reset.um2" "$GU/Card1.um2" "$GU/Vector Pinball.um2" "$GU/Land.um2" "$GU/cart.bin"
 	echo frame_cycles=25000 > "$GU/Fast.um2.cfg"
 	printf 'orient=cw\nview=open\n' > "$GU/Land.um2.cfg"
 	printf '#!/bin/bash\necho "ptx $(basename $0)" >> "$EV"\ntrap '"'"'echo "TERM ptx" >> "$EV"; exit 0'"'"' TERM\nwhile :; do sleep 0.05; done\n' > "$GU/My Prog.ptx"

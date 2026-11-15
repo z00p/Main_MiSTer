@@ -12,7 +12,6 @@
 
 // Messages shown on the Vectrex ('|' = new line, 16 characters a line at most).
 #define PITREX_MSG_ONE_CPU   "LINUX ON ONE CPU|REBOOT MISTER|THEN PICK AGAIN"
-#define PITREX_MSG_NO_UM2RUN "UM2RUN MISSING|RUN PITREX|UPDATE"
 #define PITREX_MSG_NO_FILE   "GAME FILE|NOT FOUND"
 #define PITREX_MSG_NO_SCALE  "NO CARD FOR THIS GAME|RUN PITREX MAKE|UVMC2 CARD|FROM SCRIPTS"
 #define PITREX_MSG_OLD_CARD  "CARD OUT OF DATE|RUN PITREX MAKE|UVMC2 CARD|FROM SCRIPTS"
@@ -78,8 +77,43 @@ int   pitrex_group_alive(pid_t pgid);
 // SIGTERM the members named 'first' (all if none is), wait up to timeout_ms for the group
 // to end, then SIGKILL it. Reaps pgid itself. Returns 1 if it had to kill.
 int   pitrex_group_stop(pid_t pgid, const char *first, int timeout_ms);
-// The USB interrupt mask mister_run.sh saved, put back if it is still there.
+// The USB interrupt mask saved by pitrex_irq_to_cpu1 (or mister_run.sh), put back if it is still there.
 int   pitrex_irq_restore(const char *saved);
+// The USB interrupt (dwc2, found in <proc>/interrupts) goes to CPU1; its mask is saved first as "<irq> <mask>".
+// Returns the irq number, or -1 if there is none. proc is "/proc" on the MiSTer.
+int   pitrex_irq_to_cpu1(const char *proc, const char *saved);
+
+// How a .um2 game is started: what mister_run.sh did, now done by Main itself, which runs
+// um2run as its own worker mode (main-pitrex --um2run ...).
+struct pitrex_um2_launch
+{
+	char buf[4096];
+	const char *argv[96];  // um2run's arguments; argv[0] = "um2run", NULL-terminated
+	int argc;
+	int rt_prio;           // SCHED_RR priority, 0 = SCHED_OTHER
+	int irq1;              // the USB interrupt goes to CPU1 while the game runs
+	char lead[32];         // "PTX_LEAD=..."
+	const char *env[4];    // PTX_LEAD, PTX_BACKEND, PTX_WAIT_CORE, NULL
+};
+
+#define PITREX_SCHED_DEFAULT "rt nonice irq1 share"
+// The scheduling words: the file FAIR_TEST in um2dir if there is one (its whole text, may be empty),
+// else env (mister_run.sh's UM2_SCHED) if set and not empty, else PITREX_SCHED_DEFAULT.
+// Returns 1 when FAIR_TEST was used.
+int  pitrex_um2_sched(const char *um2dir, const char *env, char *out, size_t size);
+// lead: the PTX_LEAD in Main's environment (NULL or "" = 1). Returns argc.
+int  pitrex_um2_launch_make(const pitrex_dirs *d, const pitrex_um2_plan *p, const char *sched, const char *lead, pitrex_um2_launch *l);
+
+// The last drop cause um2run logged ("core was reset ... (cause 0xNN)"), -1 if none.
+int  pitrex_um2_reset_cause(const char *log);
+// A game's exit as the shell gives it: the exit status, or 128 + the signal.
+int  pitrex_exit_code(int wait_status);
+
+// What Main does when a game ends without Main stopping it.
+#define PITREX_END_QUIET 0   // nothing to say (stopped on purpose)
+#define PITREX_END_RESET 1   // the player reset the core from the OSD: log it only
+#define PITREX_END_CRASH 2   // it died by itself: log it and say GAME STOPPED on the Vectrex
+int  pitrex_um2_end(int wait_status, int reset_cause);
 
 // Implemented by the user of this file (pitrex.cpp, or a test).
 void pitrex_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

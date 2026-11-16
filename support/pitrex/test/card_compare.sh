@@ -153,5 +153,40 @@ run "4a non-ASCII name"
 echo "== 5. usage"
 run "5a bad argument" --nonsense
 
+echo "== 6. MAKE_CARD_OSD=1 (Main's progress box): the C++ builder adds its card and step lines, nothing else changes"
+rm -rf "$W/src"; mkdir -p "$W/src/fat/pitrex/uvmc2"
+G=$W/src/fat/games/Vectrex-PiTrex/UVMC2
+mkf "$G/roms/a.zip" 100000 50; mkf "$G/G/Vector Pinball.um2" 4096 51; mkf "$G/G/Pac-Man.um2" 4096 52
+fork_tree
+PITREX_FAT=$A/fat PITREX_TMP=$A/tmp "$CLI" > "$W/a.out" 2> "$W/a.err"; ra=$?
+PITREX_FAT=$B/fat PITREX_TMP=$B/tmp MAKE_CARD_OSD=1 "$CLI" > "$W/b.out" 2> "$W/b.err"; rb=$?
+sed -i "s#$A#ROOT#g" "$W/a.out" "$W/a.err"; sed -i "s#$B#ROOT#g" "$W/b.out" "$W/b.err"
+[ "$ra" = 0 ] && [ "$rb" = 0 ] && pass "6a exit 0 both" || fail "6a exit $ra / $rb"
+if grep -v '^make_card: osd ' "$W/b.out" | cmp -s - "$W/a.out" && cmp -s "$W/a.err" "$W/b.err"; then pass "6a the other lines as without it"
+else fail "6a other lines differ"; diff "$W/a.out" "$W/b.out" | head -20; fi
+grep '^make_card: osd ' "$W/b.out" > "$W/b.osd"
+cat > "$W/want.osd" <<'EOF'
+make_card: osd card 1 2 sd.img
+make_card: osd step Reading the saves
+make_card: osd step Making the card image
+make_card: osd step Formatting
+make_card: osd step Copying the files
+make_card: osd step Putting the saves back
+make_card: osd step Checking the card
+make_card: osd card 2 2 sd_scale118.img
+make_card: osd step Reading the saves
+make_card: osd step Copying sd.img
+make_card: osd step Putting the saves back
+make_card: osd step Checking the card
+EOF
+if cmp -s "$W/want.osd" "$W/b.osd"; then pass "6a card and step lines, in order"; else fail "6a card and step lines"; diff "$W/want.osd" "$W/b.osd"; fi
+# each step line comes before the work it names: formatting after "Formatting", the copy's percentages after "Copying the files"
+if awk '/osd step Formatting/{f=1} /^make_card: formatting$/{if(!f)bad=1} /osd step Copying the files/{c=1} /copying [0-9]+ pct/{if(!c)bad=1} END{exit bad}' "$W/b.out" "$W/b.err"
+then pass "6a each step said before it is done"; else fail "6a a step said after it"; fi
+compare "6a"
+change 'printf new > "$R/fat/games/Vectrex-PiTrex/UVMC2/roms/new.txt"; touch -t '$STAMP' "$R/fat/games/Vectrex-PiTrex/UVMC2/roms/new.txt"'
+PITREX_FAT=$B/fat PITREX_TMP=$B/tmp MAKE_CARD_OSD=1 "$CLI" --check > "$W/b.out" 2>&1; rb=$?
+[ "$rb" = 1 ] && [ ! -s "$W/b.out" ] && pass "6b --check: silent as before (exit 1)" || fail "6b --check said something or exit $rb"
+
 [ "$fails" = 0 ] && echo "ALL PASS" || echo "$fails FAILED"
 exit $((fails > 0))

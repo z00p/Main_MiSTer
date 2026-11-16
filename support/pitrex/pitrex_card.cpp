@@ -85,6 +85,24 @@ void say(const char *fmt, ...)
 	va_end(a);
 }
 
+// For Main's progress box (MAKE_CARD_OSD=1 in the environment, as Main starts a build): which card is being made and the step
+// it is on, so the quiet steps (making and formatting the image, copying a scale card) show too. make_card.sh never printed
+// these, so they only come when asked for; Main leaves them out of its summary.
+bool OSD;
+int OSD_CARD, OSD_CARDS;
+void osd_card(const str &name)
+{
+	if (!OSD) return;
+	printf("make_card: osd card %d %d %s\n", ++OSD_CARD, OSD_CARDS, name.c_str());
+	fflush(stdout);
+}
+void osd_step(const char *step)
+{
+	if (!OSD) return;
+	printf("make_card: osd step %s\n", step);
+	fflush(stdout);
+}
+
 [[noreturn]] void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void die(const char *fmt, ...)
 {
@@ -1120,16 +1138,20 @@ void scale_cards()
 	{
 		str t = UV + "/sd_scale" + n + ".img";
 		need_on(UV, (fsize(OUT) + 1048575) / 1048576);
+		osd_card(base(t));
+		osd_step("Reading the saves");
 		saves_from(t, SAVES + "/scale" + n);
 		unlink(c(t + ".new"));
 		TMPFILES = { t + ".new" };
+		osd_step(("Copying " + base(OUT)).c_str());
 		if (copy_file(OUT, t + ".new", true)) die("cannot write %s.new", c(t));
+		osd_step("Putting the saves back");
 		put_saves(t + ".new", SAVES + "/scale" + n);
 		if (!attach(t + ".new", WORK + "/mnt_new")) die("cannot mount %s.new", c(base(t)));
 		if (!scalecfg(WORK + "/mnt_new", atoi(c(n)))) die("cannot write config/uvm2.cfg on %s", c(base(t)));
 		zero_preset(WORK + "/mnt_new", base(t));
 		detach(WORK + "/mnt_new");
-		if (in_path("fsck.vfat")) fsck(t + ".new", base(t));
+		if (in_path("fsck.vfat")) { osd_step("Checking the card"); fsck(t + ".new", base(t)); }
 		bool b = is_file(t);
 		swap(t);
 		TMPFILES.clear();
@@ -1379,7 +1401,10 @@ int build(const char *prog, const char *mode)
 		if (!mkdtemp(&s[0])) die("cannot create a work folder in %s", c(UV));
 		SAVES = s;
 	}
+	OSD_CARDS = (sc_only ? 0 : 1) + (int)SC_SCALES.size();
 	if (sc_only) { scale_cards(); return 0; }
+	osd_card(base(OUT));
+	osd_step("Reading the saves");
 	saves_from(OUT, SAVES + "/main");
 	for (size_t i = 0; i < bz_targets.size(); i++) saves_from(bz_targets[i], SAVES + "/bz" + std::to_string(i + 1));
 
@@ -1423,7 +1448,9 @@ int build(const char *prog, const char *mode)
 	str NEW = OUT + ".new";
 	unlink(c(NEW));
 	TMPFILES = { NEW };
+	osd_step("Making the card image");
 	if (!mkimg(NEW, mib)) die("cannot create %s", c(NEW));
+	osd_step("Formatting");
 	say("formatting");
 	if (run({ "mkfs.vfat", "-F", "32", "-s", std::to_string(secs), "-n", LABEL, NEW }, WORK + "/mkfs.log"))
 	{
@@ -1431,10 +1458,12 @@ int build(const char *prog, const char *mode)
 		die("mkfs.vfat failed");
 	}
 	say("formatted");
+	osd_step("Copying the files");
 	if (!attach(NEW, WORK + "/mnt_new")) die("cannot mount the new card image");
 	long long copied = copy_tree(CARD, WORK + "/mnt_new");
 	detach(WORK + "/mnt_new");
 	say("copied %lld files", copied);
+	osd_step(bz_targets.empty() ? "Putting the saves back" : "Making BattleZone's cards, putting the saves back");
 
 	// BattleZone copies that already exist get the new files plus their own saves: copy the card now, before sd.img's saves go in.
 	// A BattleZone card made for the first time starts with sd.img's saves (below).
@@ -1471,6 +1500,7 @@ int build(const char *prog, const char *mode)
 	// check what was built (fsck.vfat is part of dosfstools; skipped if missing)
 	if (in_path("fsck.vfat"))
 	{
+		osd_step("Checking the card");
 		fsck(NEW, base(NEW));
 		for (auto &t : bz_targets) fsck(t + ".new", base(t) + ".new");
 		say("checked (fsck.vfat): no errors");
@@ -1529,6 +1559,8 @@ int pitrex_card_main(const char *prog, const char *mode)
 	sigaction(SIGHUP, &sa, NULL);
 	signal(SIGPIPE, SIG_IGN);
 	atexit(cleanup);
+	const char *osd = getenv("MAKE_CARD_OSD");
+	OSD = osd && !strcmp(osd, "1");
 	int r = build(prog, mode ? mode : "");
 	check_sig();
 	return r;

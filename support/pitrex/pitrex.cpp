@@ -35,6 +35,8 @@
 #define PITREX_UM2_LOG   "/tmp/um2.log"
 #define PITREX_CARD_LOG  "/tmp/make_card.log"
 #define PITREX_MSG_BUILDING "CARD BEING BUILT|PLEASE WAIT"
+#define PITREX_MSG_BUILT    "CARD READY|PICK A GAME"
+#define PITREX_MSG_NOT_BUILT "CARD NOT BUILT|SEE THE OSD"
 
 // Main's own lines in the core's OSD menu (added to its conf string, never sent to the core)
 static const char *OSD_BUILD   = "R[61],Build UVMC2 card";
@@ -70,6 +72,7 @@ static int card_full;           // Build (1) or Rebuild if changed (0)
 static unsigned long card_timer, card_refresh;
 static std::string card_shown;  // the progress last put in the OSD
 static std::string card_result; // the summary, shown once the OSD is closed
+static int building_shown;      // PITREX_MSG_BUILDING is the last thing put on the Vectrex: replaced when the build ends
 static unsigned long timer;
 static unsigned long alive_timer;
 static char last_img[1024];
@@ -157,6 +160,7 @@ static void group_started(pid_t pid, int game)
 	group_game = game;
 	group_reaped = 0;
 	group_status = 0;
+	building_shown = 0;
 }
 
 static void stop_group()
@@ -315,6 +319,7 @@ static void start_um2(const char *img)
 	if (msg)
 	{
 		refuse(msg);
+		if (card_pid) building_shown = group != 0; // msg is PITREX_MSG_BUILDING
 		return;
 	}
 
@@ -506,7 +511,8 @@ static void card_build(int full)
 		return;
 	}
 	const char *argv[] = { "make_card", "--make-card", full ? NULL : "--if-needed", NULL };
-	pitrex_spawn_opt o = { dirs.pitrex, PITREX_CARD_LOG, 0, 0, 0, NULL };
+	static const char *env[] = { "MAKE_CARD_OSD=1", NULL }; // its card and step lines for the progress box
+	pitrex_spawn_opt o = { dirs.pitrex, PITREX_CARD_LOG, 0, 0, 0, env };
 	card_pid = pitrex_spawn(self_exe, argv, &o);
 	if (card_pid <= 0)
 	{
@@ -543,7 +549,23 @@ static void card_poll()
 	{
 		card_lines(lines);
 		std::string text = "Building the UVMC2 card\n\n";
-		if (!lines.empty())
+		// the builder's own card and step lines (osd_card, osd_step), with the copy's percentage; before the first one, or from
+		// a builder without them, its last line
+		std::string card, step;
+		int k = 0, cards = 0, p = -1;
+		for (auto &l : lines)
+		{
+			int a, b, at = 0;
+			if (sscanf(l.c_str(), "make_card: osd card %d %d %n", &a, &b, &at) == 2 && at) { k = a; cards = b; card = l.substr(at); step.clear(); p = -1; }
+			else if (!l.compare(0, 20, "make_card: osd step ")) { step = l.substr(20); p = -1; }
+			else if (card_progress_line(l, &pct)) p = pct;
+		}
+		if (!step.empty())
+		{
+			if (cards > 1) card_wrap(text, "Card " + std::to_string(k) + " of " + std::to_string(cards) + ": " + card, "  ");
+			card_wrap(text, p >= 0 ? step + ": " + std::to_string(p) + " %" : step + "...", "  ");
+		}
+		else if (!lines.empty())
 		{
 			if (card_progress_line(lines.back(), &pct)) text += "Copying the files: " + std::to_string(pct) + " %\n";
 			else card_wrap(text, lines.back(), "  ");
@@ -562,30 +584,59 @@ static void card_poll()
 	int rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 	pitrex_log("card build ended, exit status %d (log %s)", rc, PITREX_CARD_LOG);
 	card_lines(lines);
-	std::string body;
+	std::string body, errs;
 	int n = 0, chores = 0;
 	for (auto &l : lines)
 	{
-		if (card_progress_line(l, &pct) || l == "make_card: formatting" || l == "make_card: formatted") continue;
-		card_wrap(body, l, "  ");
-		n++;
+		if (card_progress_line(l, &pct) || l == "make_card: formatting" || l == "make_card: formatted" || !l.compare(0, 15, "make_card: osd "))
+			continue;
 		// the builder's chores before it decides to build (overlays, .um2 games moved to the games folder): said even
 		// when the card is current, which is otherwise silent
-		if (!l.compare(0, 19, "make_card: overlay ") || (!l.compare(0, 18, "make_card: copied ") && l.find(" .um2 game") != std::string::npos))
-			chores++;
+		bool chore = !l.compare(0, 19, "make_card: overlay ") || (!l.compare(0, 18, "make_card: copied ") && l.find(" .um2 game") != std::string::npos);
+		if (rc)
+		{
+			// stopped: the reason first, without the look at the folder that came before it
+			if (!l.compare(0, 17, "make_card: ERROR:")) { card_wrap(errs, l, "  "); n++; continue; }
+			if (chore || !l.compare(0, 23, "make_card: card folder:") || !l.compare(0, 21, "make_card: card size:")) continue;
+		}
+		card_wrap(body, l, "  ");
+		n++;
+		if (chore) chores++;
 	}
 	if (rc && !n) body = "The builder stopped.\n";
 	else if (!rc && n == chores) card_wrap(body, "The card is up to date: nothing to build.", "  ");
-	// the end matters most (the error, the cards made): at most 12 lines
-	size_t at = body.size();
-	for (int k = 0; k < 13 && at > 0; k++)
+	body = errs + body;
+	// at most 12 lines: after a build the end matters most (the cards made), after a stop the start (the reason)
+	if (rc)
 	{
-		at = body.rfind('\n', at - 1);
-		if (at == std::string::npos) { at = 0; break; }
+		size_t at = 0;
+		for (int k = 0; k < 12 && at != std::string::npos; k++)
+		{
+			at = body.find('\n', at);
+			if (at != std::string::npos) at++;
+		}
+		if (at != std::string::npos && at < body.size()) body = body.substr(0, at) + "...\n";
 	}
-	if (at > 0) body = "...\n" + body.substr(at + 1);
+	else
+	{
+		size_t at = body.size();
+		for (int k = 0; k < 13 && at > 0; k++)
+		{
+			at = body.rfind('\n', at - 1);
+			if (at == std::string::npos) { at = 0; break; }
+		}
+		if (at > 0) body = "...\n" + body.substr(at + 1);
+	}
 	card_result = std::string(rc ? "UVMC2 card NOT built" : card_full ? "UVMC2 card built" : "UVMC2 card") + "\n\n" + body;
 	while (!card_result.empty() && card_result.back() == '\n') card_result.pop_back();
+
+	// the Vectrex still says CARD BEING BUILT (a game was picked meanwhile, nothing since): say how it ended
+	if (building_shown)
+	{
+		building_shown = 0;
+		stop_group();
+		show(rc ? PITREX_MSG_NOT_BUILT : PITREX_MSG_BUILT);
+	}
 }
 
 void pitrex_poll()

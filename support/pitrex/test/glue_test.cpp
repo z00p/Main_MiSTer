@@ -402,6 +402,7 @@ int main(int argc, char **argv)
 	check(pitrex_osd_option("R[61],Build UVMC2 card") == 1, "Build UVMC2 card: ours, handled");
 	run_for(500);
 	check(count("make_card []") == 1, "... as main-pitrex --make-card (a full build)");
+	check(count("make_card [] osd=1") == 1 && count("make_card [--check] osd=1") == 0, "... asked for its card and step lines (MAKE_CARD_OSD=1; the card check is not)");
 	check(strstr(info_text, "Building the UVMC2 card") && strstr(info_text, "Copying the files: 50 %"), "progress in the OSD");
 	check(pitrex_osd_option("R[62],Rebuild card if changed") == 1 && count("make_card [--if-needed]") == 0, "a second build while one runs: not started");
 	snprintf(path, sizeof(path), "%s/Plain.um2", U);
@@ -417,6 +418,9 @@ int main(int argc, char **argv)
 	check(strstr(info_text, "UVMC2 card built\n\ncard folder: 3 files, 1 MiB") && strstr(info_text, "done: pitrex/uvmc2/sd.img"), "then the summary, storage folder left out");
 	check(!strstr(info_text, "copying") && !strstr(info_text, root), "... without the progress lines");
 	check(max_poll < 250, "Main never waited for the builder");
+	check(count("TERM message") >= 1 && count("--message CARD READY|PICK A GAME") == 1,
+		"CARD BEING BUILT on the Vectrex replaced by CARD READY at the end (it stayed until the next pick: John's MiSTer, 16 Nov)");
+	pitrex_stop();
 
 	// the card is current: the builder only does its chores (as make_card.sh on John's MiSTer, 16 Nov)
 	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
@@ -439,18 +443,65 @@ int main(int argc, char **argv)
 	pitrex_osd_option("R[62],Rebuild card if changed");
 	run_for(800);
 	check(!strstr(info_text, "up to date"), "... but not when it built one");
+	check(count("--message CARD READY") == 1, "... and nothing on the Vectrex when no game was picked meanwhile");
+
+	// the builder's card and step lines: the quiet steps show, and a card's "done" is not the end (John's MiSTer, 16 Nov)
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: card folder: 3 files, 1 MiB (skipped: nothing)'\n"
+		"echo 'make_card: osd card 1 2 sd.img'\necho 'make_card: osd step Formatting'\nsleep 1\n"
+		"echo 'make_card: formatting'\necho 'make_card: osd step Copying the files'\necho 'make_card: copying 40 pct'\nsleep 1\n"
+		"echo 'make_card: done: sd.img (the old one is sd.img.bak)'\n"
+		"echo 'make_card: osd card 2 2 sd_scale118.img'\necho 'make_card: osd step Copying sd.img'\nsleep 1\n"
+		"echo 'make_card: done: sd_scale118.img, the card for games with scale 118'\nexit 0\n");
+	fclose(f);
+	pitrex_osd_option("R[61],Build UVMC2 card");
+	run_for(600);
+	check(!strcmp(info_text, "Building the UVMC2 card\n\nCard 1 of 2: sd.img\nFormatting...\n"), "the step being done, with the card");
+	run_for(1000);
+	check(!strcmp(info_text, "Building the UVMC2 card\n\nCard 1 of 2: sd.img\nCopying the files: 40 %\n"), "... the copy with its percentage");
+	snprintf(path, sizeof(path), "%s/Plain.um2", U);
+	pick(path);
+	run_for(100);
+	snprintf(path, sizeof(path), "%s/My Prog.ptx", U);
+	pick(path);
+	run_for(900);
+	check(!strcmp(info_text, "Building the UVMC2 card\n\nCard 2 of 2: sd_scale118.img\nCopying sd.img...\n"), "... the next card, after the first one's done");
+	run_for(800);
+	check(strstr(info_text, "UVMC2 card built\n\ncard folder: 3 files, 1 MiB") && strstr(info_text, "done: sd_scale118.img") && !strstr(info_text, "osd") &&
+		!strstr(info_text, "Copying"), "the summary without the card and step lines");
+	check(count("ptx My_Prog") == 2 && count("--message CARD READY") == 1, "a program started meanwhile: left alone at the end (nothing put over it)");
+	pitrex_stop();
+	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
 
 	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
 	f = fopen(path, "w");
-	fprintf(f, "echo 'make_card: ERROR: a UVMC2 game is running and may be writing to its card: stop it first (Scripts > PiTrex_Stop)'\nexit 1\n");
+	// as on John's MiSTer (16 Nov): the look at the folder first, then the refusal
+	fprintf(f, "echo 'make_card: overlay VecDrive.um2: kept yours'\n"
+		"echo 'make_card: card folder: 108 files, 175 MiB (skipped: 96 .um2/.uf2 files, 1 README.txt)'\nsleep 1\n"
+		"echo 'make_card: ERROR: a UVMC2 game is running and may be writing to its card: stop it first (Scripts > PiTrex_Stop)'\nexit 1\n");
 	fclose(f);
 	check(pitrex_osd_option("R[62],Rebuild card if changed") == 1, "Rebuild card if changed: ours, handled");
-	run_for(800);
+	snprintf(path, sizeof(path), "%s/Plain.um2", U);
+	pick(path);
+	run_for(1500);
 	check(count("make_card [--if-needed]") == 4, "... as main-pitrex --make-card --if-needed (the 4th, after the three above)");
 	// wrapped at 30 characters a line
-	check(!!strstr(info_text, "UVMC2 card NOT built\n\nERROR: a game is using the\n  card. Reset the core (OSD\n  Reset), then try again."),
-		"a refusal: said in the OSD in Main's words");
+	check(!strcmp(info_text, "UVMC2 card NOT built\n\nERROR: a game is using the\n  card. Reset the core (OSD\n  Reset), then try again."),
+		"a refusal: said in the OSD in Main's words, and only that (not the look at the folder before it)");
 	check(!strstr(info_text, "PiTrex_Stop"), "... not the script's");
+	check(count("--message CARD NOT BUILT|SEE THE OSD") == 1, "... and on the Vectrex, which said CARD BEING BUILT");
+	pitrex_stop();
+
+	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: card folder: 3 files, 1 MiB (skipped: nothing)'\necho 'make_card: card size: 64 MiB, FAT32 with 512-byte clusters'\n"
+		"echo 'mkfs.fat: unable to open sd.img.new'\necho 'make_card: ERROR: mkfs.vfat failed'\nexit 1\n");
+	fclose(f);
+	pitrex_osd_option("R[61],Build UVMC2 card");
+	run_for(800);
+	check(!strcmp(info_text, "UVMC2 card NOT built\n\nERROR: mkfs.vfat failed\nmkfs.fat: unable to open\n  sd.img.new"),
+		"a failure: the error first, then the tool's own words");
+	check(count("--message CARD NOT BUILT") == 1, "... nothing on the Vectrex when no game was picked meanwhile");
 	pitrex_stop();
 
 	printf("== Main's process is left as it was\n");

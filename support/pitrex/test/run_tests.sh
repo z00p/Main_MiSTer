@@ -203,7 +203,7 @@ if true; then
 # main-pitrex --make-card: the card check (--check) does what ../card_check.sh says, a build what ../card_build.sh says
 # (exit 0 if there is none)
 if [ "$1" = --make-card ]; then
-	echo "make_card [$2]" >> "$EV"
+	echo "make_card [$2] osd=${MAKE_CARD_OSD:-}" >> "$EV"
 	c=$(dirname "$0")/../card_build.sh
 	[ "$2" = --check ] && c=$(dirname "$0")/../card_check.sh
 	[ -f "$c" ] && exec sh "$c"

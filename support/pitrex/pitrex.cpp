@@ -545,14 +545,19 @@ static void card_poll()
 	pitrex_log("card build ended, exit status %d (log %s)", rc, PITREX_CARD_LOG);
 	card_lines(lines);
 	std::string body;
-	int n = 0;
+	int n = 0, chores = 0;
 	for (auto &l : lines)
 	{
 		if (card_progress_line(l, &pct) || l == "make_card: formatting" || l == "make_card: formatted") continue;
 		card_wrap(body, l, "  ");
 		n++;
+		// the builder's chores before it decides to build (overlays, .um2 games moved to the games folder): said even
+		// when the card is current, which is otherwise silent
+		if (!l.compare(0, 19, "make_card: overlay ") || (!l.compare(0, 18, "make_card: copied ") && l.find(" .um2 game") != std::string::npos))
+			chores++;
 	}
-	if (!n) body = rc ? "The builder stopped.\n" : "Up to date: nothing to do.\n";
+	if (rc && !n) body = "The builder stopped.\n";
+	else if (!rc && n == chores) card_wrap(body, "The card is up to date: nothing to build.", "  ");
 	// the end matters most (the error, the cards made): at most 12 lines
 	size_t at = body.size();
 	for (int k = 0; k < 13 && at > 0; k++)

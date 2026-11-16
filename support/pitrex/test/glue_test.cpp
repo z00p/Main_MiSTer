@@ -367,13 +367,35 @@ int main(int argc, char **argv)
 	check(!strstr(info_text, "copying") && !strstr(info_text, root), "... without the progress lines");
 	check(max_poll < 250, "Main never waited for the builder");
 
+	// the card is current: the builder only does its chores (as make_card.sh on John's MiSTer, 16 Nov)
+	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: overlay VecDrive.um2: kept yours'\nexit 0\n");
+	fclose(f);
+	check(pitrex_osd_option("R[62],Rebuild card if changed") == 1, "Rebuild card if changed, card current: handled");
+	run_for(800);
+	check(!!strstr(info_text, "UVMC2 card\n\noverlay VecDrive.um2: kept\n  yours\nThe card is up to date:\n  nothing to build."),
+		"... the chores, then 'up to date'");
+	f = fopen(path, "w");
+	fprintf(f, "exit 0\n");
+	fclose(f);
+	pitrex_osd_option("R[62],Rebuild card if changed");
+	run_for(800);
+	check(!!strstr(info_text, "UVMC2 card\n\nThe card is up to date:\n  nothing to build."), "... and with nothing said at all");
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: overlay VecDrive.um2: kept yours'\necho 'make_card: done: sd.img'\nexit 0\n");
+	fclose(f);
+	pitrex_osd_option("R[62],Rebuild card if changed");
+	run_for(800);
+	check(!strstr(info_text, "up to date"), "... but not when it built one");
+
 	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
 	f = fopen(path, "w");
 	fprintf(f, "echo 'make_card: ERROR: a UVMC2 game is running and may be writing to its card: stop it first (Scripts > PiTrex_Stop)'\nexit 1\n");
 	fclose(f);
 	check(pitrex_osd_option("R[62],Rebuild card if changed") == 1, "Rebuild card if changed: ours, handled");
 	run_for(800);
-	check(count("make_card [--if-needed]") == 1, "... as main-pitrex --make-card --if-needed");
+	check(count("make_card [--if-needed]") == 4, "... as main-pitrex --make-card --if-needed (the 4th, after the three above)");
 	// wrapped at 30 characters a line
 	check(!!strstr(info_text, "UVMC2 card NOT built\n\nERROR: a game is using the\n  card. Reset the core (OSD\n  Reset), then try again."),
 		"a refusal: said in the OSD in Main's words");

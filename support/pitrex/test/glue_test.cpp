@@ -395,7 +395,8 @@ int main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
 	f = fopen(path, "w");
 	fprintf(f, "echo 'make_card: card folder: 3 files, 1 MiB (skipped: nothing)'\necho 'make_card: copying 50 pct' >&2\nsleep 1\n"
-		"echo 'make_card: done: %s/pitrex/uvmc2/sd.img (the old one is sd.img.bak)'\nexit 0\n", root);
+		"echo 'make_card: copied 3 files'\necho 'make_card: put the 2 saved file(s) back into %s/pitrex/uvmc2/sd.img'\n"
+		"echo 'make_card: checked (fsck.vfat): no errors'\necho 'make_card: done: %s/pitrex/uvmc2/sd.img (the old one is sd.img.bak)'\nexit 0\n", root, root);
 	fclose(f);
 	info_text[0] = 0;
 	max_poll = 0;
@@ -415,7 +416,8 @@ int main(int argc, char **argv)
 	check(!strstr(info_text, "UVMC2 card built"), "the result waits while the OSD is open");
 	osd_visible = 0;
 	run_for(100);
-	check(strstr(info_text, "UVMC2 card built\n\ncard folder: 3 files, 1 MiB") && strstr(info_text, "done: pitrex/uvmc2/sd.img"), "then the summary, storage folder left out");
+	check(!strcmp(info_text, "UVMC2 card built\n\nsd.img: 3 files, 2 saves\n(old cards: .bak)"),
+		"then the summary: a line a card, with its files and saves (it was the builder's last 12 lines, cut mid-line: John's MiSTer, 16 Nov)");
 	check(!strstr(info_text, "copying") && !strstr(info_text, root), "... without the progress lines");
 	check(max_poll < 250, "Main never waited for the builder");
 	check(count("TERM message") >= 1 && count("--message CARD READY|PICK A GAME") == 1,
@@ -467,9 +469,28 @@ int main(int argc, char **argv)
 	run_for(900);
 	check(!strcmp(info_text, "Building the UVMC2 card\n\nCard 2 of 2: sd_scale118.img\nCopying sd.img...\n"), "... the next card, after the first one's done");
 	run_for(800);
-	check(strstr(info_text, "UVMC2 card built\n\ncard folder: 3 files, 1 MiB") && strstr(info_text, "done: sd_scale118.img") && !strstr(info_text, "osd") &&
-		!strstr(info_text, "Copying"), "the summary without the card and step lines");
+	check(!strcmp(info_text, "UVMC2 card built\n\nsd.img: made\nsd_scale118.img: made\n(old cards: .bak)"), "the summary without the card and step lines");
 	check(count("ptx My_Prog") == 2 && count("--message CARD READY") == 1, "a program started meanwhile: left alone at the end (nothing put over it)");
+	pitrex_stop();
+
+	// the builder's lines of John's build (16 Nov 13:05), without the card and step lines
+	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
+	f = fopen(path, "w");
+	fprintf(f, "echo 'make_card: overlay VecDrive.um2: kept yours'\n"
+		"echo 'make_card: card folder: 108 files, 175 MiB (skipped: 96 .um2/.uf2 files, 1 README.txt (this folder'\"'\"'s notes), 56 game settings and card images, 2 menu pictures and videos (ASSETS), 1 overlay art)'\n"
+		"echo 'make_card: kept the saves of the old sd.img (8 file(s) the games wrote)'\necho 'make_card: card size: 235 MiB, FAT32 with 512-byte clusters'\n"
+		"echo 'make_card: formatting'\necho 'make_card: formatted'\necho 'make_card: copied 108 files'\n"
+		"echo 'make_card: put the 8 saved file(s) back into %s/pitrex/uvmc2/sd.img'\necho 'make_card: checked (fsck.vfat): no errors'\n"
+		"echo 'make_card: done: %s/pitrex/uvmc2/sd.img (the old one is sd.img.bak)'\n"
+		"echo 'make_card: kept the saves of the old sd_scale118.img (9 file(s) the games wrote)'\n"
+		"echo 'make_card: put the 9 saved file(s) back into %s/pitrex/uvmc2/sd_scale118.img'\n"
+		"echo 'make_card: done: %s/pitrex/uvmc2/sd_scale118.img, the card for games with scale 118 (the old one is sd_scale118.img.bak)'\nexit 0\n",
+		root, root, root, root);
+	fclose(f);
+	pitrex_osd_option("R[61],Build UVMC2 card");
+	run_for(800);
+	check(!strcmp(info_text, "UVMC2 card built\n\noverlay VecDrive.um2: kept\n  yours\nsd.img: 108 files, 8 saves\nsd_scale118.img: 9 saves\n(old cards: .bak)"),
+		"John's build: one line a card, files and saves");
 	pitrex_stop();
 	snprintf(path, sizeof(path), "%s/pitrex/card_build.sh", root);
 

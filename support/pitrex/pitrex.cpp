@@ -586,10 +586,37 @@ static void card_poll()
 	card_lines(lines);
 	std::string body, errs;
 	int n = 0, chores = 0;
+	// after a build: one line per card made ("sd.img: 108 files, 8 saves"), from the builder's own lines
+	struct made { std::string name; int files, saves; };
+	std::vector<made> cards;
+	int files = -1;      // "copied N files": the next card's
+	bool baks = false;   // an old card was kept as .bak
+	std::vector<std::pair<std::string, int>> saves; // "put the N saved file(s) back into <card>"
+	auto base = [](const std::string &p) { size_t i = p.rfind('/'); return i == std::string::npos ? p : p.substr(i + 1); };
 	for (auto &l : lines)
 	{
 		if (card_progress_line(l, &pct) || l == "make_card: formatting" || l == "make_card: formatted" || !l.compare(0, 15, "make_card: osd "))
 			continue;
+		if (!rc)
+		{
+			int k = 0, at = 0;
+			if (sscanf(l.c_str(), "make_card: copied %d files%n", &k, &at) == 1 && at == (int)l.size()) { files = k; continue; }
+			if (sscanf(l.c_str(), "make_card: put the %d saved file(s) back into %n", &k, &at) == 1 && at) { saves.push_back({ base(l.substr(at)), k }); continue; }
+			if (!l.compare(0, 17, "make_card: done: "))
+			{
+				std::string p = l.substr(17);
+				size_t e = std::min(p.find(" ("), p.find(", "));
+				if (l.find("(the old one is ") != std::string::npos) baks = true;
+				cards.push_back({ base(p.substr(0, e)), files, 0 });
+				files = -1;
+				for (auto &s : saves) if (s.first == cards.back().name) cards.back().saves = s.second;
+				continue;
+			}
+			// what led up to it, said by the lines above
+			if (!l.compare(0, 23, "make_card: card folder:") || !l.compare(0, 21, "make_card: card size:") || !l.compare(0, 31, "make_card: kept the saves of th") ||
+				!l.compare(0, 18, "make_card: checked"))
+				continue;
+		}
 		// the builder's chores before it decides to build (overlays, .um2 games moved to the games folder): said even
 		// when the card is current, which is otherwise silent
 		bool chore = !l.compare(0, 19, "make_card: overlay ") || (!l.compare(0, 18, "make_card: copied ") && l.find(" .um2 game") != std::string::npos);
@@ -604,7 +631,21 @@ static void card_poll()
 		if (chore) chores++;
 	}
 	if (rc && !n) body = "The builder stopped.\n";
-	else if (!rc && n == chores) card_wrap(body, "The card is up to date: nothing to build.", "  ");
+	else if (!rc && cards.empty() && n == chores) card_wrap(body, "The card is up to date: nothing to build.", "  ");
+	if (!cards.empty())
+	{
+		std::string made;
+		for (auto &m : cards)
+		{
+			std::string t = m.name + ":";
+			if (m.files >= 0) t += " " + std::to_string(m.files) + " files";
+			if (m.saves) t += std::string(m.files >= 0 ? "," : "") + " " + std::to_string(m.saves) + (m.saves == 1 ? " save" : " saves");
+			if (m.files < 0 && !m.saves) t += " made";
+			card_wrap(made, t, "  ");
+		}
+		if (baks) made += "(old cards: .bak)\n";
+		body += made; // last: what was made (kept by the 12-line limit below)
+	}
 	body = errs + body;
 	// at most 12 lines: after a build the end matters most (the cards made), after a stop the start (the reason)
 	if (rc)

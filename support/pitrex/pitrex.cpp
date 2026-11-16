@@ -429,9 +429,27 @@ void pitrex_confstr(char *cfg, size_t size)
 	size_t n = name_end ? (size_t)(name_end - cfg) : strlen(cfg);
 	if (n != strlen("Vectrex-PiTrex") || strncasecmp(cfg, "Vectrex-PiTrex", n)) return;
 
-	// no empty field: the menu stops at one
-	size_t len = strlen(cfg);
-	snprintf(cfg + len, size - len, "%s-;%s;%s", (len && cfg[len - 1] != ';') ? ";" : "", OSD_BUILD, OSD_REBUILD);
+	// Where: after the last line the menu shows, before the fields it does not show (joystick J/jn, info I, versions v and
+	// V). The menu skips those when it draws but counts them when a line is picked, so lines after them are picked one
+	// field off per hidden field (the core's own conf string warns of it). No empty field either: the menu stops at one.
+	const std::string lines = std::string("-;") + OSD_BUILD + ";" + OSD_REBUILD;
+	std::string s = cfg;
+	size_t at = std::string::npos; // the start of the trailing hidden fields
+	for (size_t f = n + 1; f < s.size();)
+	{
+		size_t e = s.find(';', f);
+		if (e == std::string::npos) e = s.size();
+		const char t = s[f], t1 = (f + 1 < s.size()) ? s[f + 1] : 0;
+		bool hidden = t == 'J' || t == 'j' || ((t == 'I' || t == 'V' || t == 'v') && t1 == ',');
+		if (hidden) { if (at == std::string::npos) at = f; }
+		else if (e > f) at = std::string::npos; // a line of the menu after them: not the end yet
+		f = e + 1;
+	}
+	if (at != std::string::npos) s.insert(at, lines + ";");
+	else s += ((!s.empty() && s.back() != ';') ? ";" : "") + lines;
+
+	// too long for the buffer: left as the core sent it (no lines rather than a cut conf string)
+	if (s.size() < size) memcpy(cfg, s.c_str(), s.size() + 1);
 }
 
 // a line of the builder's for the OSD's info box (30 characters a line): without "make_card: " and the storage

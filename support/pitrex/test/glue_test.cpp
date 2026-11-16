@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <string>
+#include <vector>
 
 #include "../../../cfg.h"
 #include "../../../user_io.h"
@@ -325,19 +327,68 @@ int main(int argc, char **argv)
 
 	printf("== the core's OSD: Main's own lines build the UVMC2 card, with the progress in the OSD\n");
 	{
-		char cs[512] = "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;R7,Reset;V,v1.0.261115";
+		// The menu's two rules (menu.cpp, top level): drawing counts only the lines it shows, a pick counts every field from 'A'
+		// up (page items and '-' aside). The field a pick of the drawn line <label> lands on:
+		auto picked = [](const char *cs, const char *label) -> std::string {
+			std::vector<std::string> f;
+			for (const char *a = cs;; )
+			{
+				const char *e = strchr(a, ';');
+				f.push_back(e ? std::string(a, e - a) : std::string(a));
+				if (!e) break;
+				a = e + 1;
+			}
+			auto paged = [](const std::string &p) { return p[0] == 'P' && p.size() > 2 && p[2] != ','; };
+			int drawn = -1;
+			size_t i;
+			for (i = 2; i < f.size() && !f[i].empty(); i++)
+			{
+				if (paged(f[i]) || !strchr("FSTRtrOoP", f[i][0])) continue;
+				drawn++;
+				if (f[i].find(label) != std::string::npos) break;
+			}
+			if (i >= f.size() || f[i].empty()) return "(not drawn)";
+			int entry = 0;
+			for (i = 2; i < f.size() && !f[i].empty(); i++)
+			{
+				if (paged(f[i]) || f[i][0] < 'A') continue;
+				if (entry++ == drawn) return f[i];
+			}
+			return "(none)";
+		};
+
+		// the end of the real core's conf string (Vectrex.sv, 5 Nov build): hidden fields after the menu's last line
+		char cs[1024] = "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;P1,Video Profiles;P1O[5],Overlay,Off,On;-;R7,Reset;"
+			"J1,Button 1,Button 2,Pause;jn,A,B,Select;I,Overlay On,Profile: Neon Blue;v,2;V,v1.0.261105";
+		check(picked(cs, "Rebuild card") == "(not drawn)", "(the menu rules, as copied: our lines not there before)");
+		std::string old = std::string(cs) + ";-;R[61],Build UVMC2 card;R[62],Rebuild card if changed";
+		check(picked(old.c_str(), "Build UVMC2 card").compare(0, 3, "J1,") == 0 && picked(old.c_str(), "Rebuild card").compare(0, 3, "jn,") == 0,
+			"(the menu rules, as copied: lines appended at the end are picked as J1 and jn, as on John's MiSTer)");
 		pitrex_confstr(cs, sizeof(cs));
-		check(!strcmp(cs, "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;R7,Reset;V,v1.0.261115;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed"),
-			"two lines added at the end of our core's menu");
+		check(!strcmp(cs, "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;P1,Video Profiles;P1O[5],Overlay,Off,On;-;R7,Reset;"
+			"-;R[61],Build UVMC2 card;R[62],Rebuild card if changed;"
+			"J1,Button 1,Button 2,Pause;jn,A,B,Select;I,Overlay On,Profile: Neon Blue;v,2;V,v1.0.261105"),
+			"two lines after the core's last menu line (Reset), before its hidden fields");
+		check(picked(cs, "Build UVMC2 card") == "R[61],Build UVMC2 card" && picked(cs, "Rebuild card") == "R[62],Rebuild card if changed",
+			"a pick of either line lands on that line (appended after J1/jn/I/v/V, it hit J1 and jn: John's MiSTer, 16 Nov)");
+		check(picked(cs, "Reset") == "R7,Reset", "... and the core's own Reset still on Reset");
+		char cs1[512] = "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;R7,Reset;V,v1.0.261115";
+		pitrex_confstr(cs1, sizeof(cs1));
+		check(!strcmp(cs1, "Vectrex-PiTrex;;-;F3,UM2,Load UVMC2;R7,Reset;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed;V,v1.0.261115"),
+			"only a version field after the menu: before it");
 		char cs2[512] = "Vectrex-PiTrex;;-;R7,Reset;";
 		pitrex_confstr(cs2, sizeof(cs2));
-		check(!strcmp(cs2, "Vectrex-PiTrex;;-;R7,Reset;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed"), "no empty field after a trailing ;");
+		check(!strcmp(cs2, "Vectrex-PiTrex;;-;R7,Reset;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed"), "no hidden fields: at the end, no empty field after a trailing ;");
+		char cs5[512] = "Vectrex-PiTrex;;J1,A,B;-;R7,Reset;V,v1";
+		pitrex_confstr(cs5, sizeof(cs5));
+		check(!strcmp(cs5, "Vectrex-PiTrex;;J1,A,B;-;R7,Reset;-;R[61],Build UVMC2 card;R[62],Rebuild card if changed;V,v1"),
+			"a hidden field before menu lines: only the trailing ones count");
 		char cs3[512] = "VECTREX;;-;R0,Reset;V,v1";
 		pitrex_confstr(cs3, sizeof(cs3));
 		check(!strcmp(cs3, "VECTREX;;-;R0,Reset;V,v1"), "another core (the official Vectrex): nothing added");
 		char cs4[40] = "Vectrex-PiTrex;;-;R7,Reset";
 		pitrex_confstr(cs4, sizeof(cs4));
-		check(strlen(cs4) == sizeof(cs4) - 1, "a full conf string is not overrun");
+		check(!strcmp(cs4, "Vectrex-PiTrex;;-;R7,Reset"), "too long for the buffer: left as the core sent it");
 		check(!pitrex_osd_option("R7,Reset") && !pitrex_osd_option("R[61],Build") && !pitrex_osd_option("T[61],Build UVMC2 card"),
 			"the core's own lines are not ours (nothing started)");
 	}
